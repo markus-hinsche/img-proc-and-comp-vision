@@ -1,0 +1,25 @@
+[project]
+name = "cv-course"
+version = "0.1.0"
+description = "DSR 3-day PyTorch Computer Vision course"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "pillow>=10.0",
+    "tqdm>=4.66",
+    "ipywidgets>=8.1",
+    "jupyterlab>=4.0",
+    "scikit-learn>=1.4",
+    "timm>=1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cvcourse"]
