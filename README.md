@@ -106,9 +106,6 @@ img-proc-and-comp-vision/
 │   ├── 09_building_vit.ipynb
 │   └── 10_cnn_vs_vit.ipynb
 ├── src/cvcourse/             # reusable helpers used by notebooks
-├── slides/                   # short slide decks (Marp markdown) — see SLIDES.md
-├── SLIDES.md                 # how to build/edit slides + Marp syntax reference
-├── scripts/build_notebooks.py  # regenerates notebooks/ from source
 └── data/                     # cached datasets (gitignored)
 ```
 
@@ -133,14 +130,6 @@ NotebookClient(nb, timeout=120, kernel_name='python3').execute()
 print('OK')
 "
 ```
-
----
-
-## Slides
-
-Short decks live in `slides/` as Marp markdown (e.g. `slides/day1.md`,
-`slides/day3.md`) and are built to PDF. See [SLIDES.md](SLIDES.md) for
-build commands, frontmatter, and syntax reference.
 
 ---
 
@@ -169,33 +158,11 @@ build commands, frontmatter, and syntax reference.
 
 ---
 
-## For instructors — editing the course
-
-Notebooks are **generated** from `scripts/build_notebooks.py`. Each notebook's cells live as plain Python lists of markdown/code blocks, which is much easier to diff and review than raw `.ipynb` JSON.
-
-To edit a notebook's content:
-
-1. Edit `scripts/build_notebooks.py` (the `N01`, `N02`, … lists).
-2. Regenerate: `python3 scripts/build_notebooks.py`.
-3. Re-execute to refresh outputs (optional but recommended before teaching):
-   ```bash
-   uv run python -c "
-   import nbformat; from nbclient import NotebookClient
-   nb = nbformat.read('notebooks/01_images_as_tensors.ipynb', as_version=4)
-   NotebookClient(nb, timeout=600, kernel_name='python3').execute()
-   nbformat.write(nb, 'notebooks/01_images_as_tensors.ipynb')
-   "
-   ```
-
-If you'd rather edit `.ipynb` files directly in JupyterLab, that's fine too — just know the build script will overwrite them if you re-run it.
-
----
-
 ## Teaching philosophy
 
 - **Visualize first, theory second.** CV is visual; tensors and feature maps should be on screen constantly.
 - **No abstraction magic.** Explicit training loops, no Lightning. Once `loss.backward()` and `optimizer.step()` click, abstractions are convenience, not mystery.
-- **Debug-friendly.** Tensor shapes, devices, normalization, `eval()` vs `train()` — taught explicitly, with intentional bugs. See the debugging section in `slides/day1.md`.
+- **Debug-friendly.** Tensor shapes, devices, normalization, `eval()` vs `train()` — taught explicitly, with intentional bugs.
 - **CPU-first.** GPU helps but is never required.
 
 ## Prerequisites

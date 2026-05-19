@@ -1,6 +1,6 @@
 """Generate the course notebooks from compact Python sources.
 
-Run with:  python3 scripts/build_notebooks.py
+Run with:  python3 teacher/scripts/build_notebooks.py
 
 We keep the *authoring* form as plain Python lists of (kind, text) cells so the
 content is easy to edit, diff, and review. The script writes one .ipynb per
@@ -16,7 +16,7 @@ import json
 import textwrap
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 NB_DIR = ROOT / "notebooks"
 NB_DIR.mkdir(exist_ok=True)
 
@@ -316,7 +316,9 @@ N02 = [
     sobel_x = torch.tensor([[-1., 0., 1.],
                             [-2., 0., 2.],
                             [-1., 0., 1.]]).view(1, 1, 3, 3)
-    sobel_y = sobel_x.transpose(-1, -2)
+    sobel_y = torch.tensor([[-1., -2., -1.],
+                            [ 0.,  0.,  0.],
+                            [ 1.,  2.,  1.]]).view(1, 1, 3, 3)
 
     gx = F.conv2d(x, sobel_x, padding=1)
     gy = F.conv2d(x, sobel_y, padding=1)
@@ -501,6 +503,11 @@ N04 = [
 
     from cvcourse import get_device, count_params, show_grid
 
+    # get_device() auto-picks cuda > mps > cpu.
+    # To force a specific backend, replace with one of:
+    #   device = torch.device("cpu")
+    #   device = torch.device("cuda")   # NVIDIA GPU
+    #   device = torch.device("mps")    # Apple Silicon
     device = get_device()
     print("device:", device)
     """),
