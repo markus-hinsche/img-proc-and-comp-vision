@@ -501,6 +501,8 @@ N04 = [
     from torchvision import transforms as T
     from tqdm.auto import tqdm
 
+    from torchinfo import summary
+
     from cvcourse import get_device, count_params, show_grid
 
     # get_device() auto-picks cuda > mps > cpu.
@@ -533,15 +535,19 @@ N04 = [
     """),
     code("""
     model = nn.Sequential(
-        nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),  # 28 -> 14
-        nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2), # 14 -> 7
+        nn.Conv2d(1, 16, 3, padding=1),
+        nn.ReLU(),
+        nn.MaxPool2d(2),  # 28 -> 14
+        nn.Conv2d(16, 32, 3, padding=1),
+        nn.ReLU(),
+        nn.MaxPool2d(2),  # 14 -> 7
         nn.Flatten(),
-        nn.Linear(32 * 7 * 7, 64), nn.ReLU(),
+        nn.Linear(32 * 7 * 7, 64),
+        nn.ReLU(),
         nn.Linear(64, 10),
     ).to(device)
 
-    print(model)
-    print("trainable params:", count_params(model))
+    summary(model, input_size=(1, 1, 28, 28), device=device)  # (batch, C, H, W)
     """),
     md("""
     ## 3. Sanity-check the forward pass
@@ -678,10 +684,15 @@ N05 = [
 
     ```python
     model = nn.Sequential(
-        nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-        nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+        nn.Conv2d(1, 16, 3, padding=1),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+        nn.Conv2d(16, 32, 3, padding=1),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
         nn.Flatten(),
-        nn.Linear(32 * 7 * 7, 64), nn.ReLU(),
+        nn.Linear(32 * 7 * 7, 64),
+        nn.ReLU(),
         nn.Linear(64, 10),
     )
     ```
@@ -742,17 +753,346 @@ N05 = [
 
     You can't do that with `nn.Sequential`.
     """),
-    md("## 2. Architecture upgrades: BatchNorm + global average pooling"),
-    code("# TODO: Architecture: more conv blocks, BatchNorm, GAP head"),
-    md("## 3. Augmentations that actually help (RandomCrop, ColorJitter)"),
-    code("# TODO: Augmentations"),
-    md("## 4. Learning-rate schedules (cosine, step)"),
-    code("# TODO: LR schedules"),
-    md("## 5. Saving / loading checkpoints"),
-    code("# TODO: checkpoints"),
-    md("## 6. Validating without leaking the test set"),
-    code("# TODO: train/val/test split"),
-    md("> ⚠️ Sections 2–6 still skeletons — flesh out after Day 1 dry-run."),
+    md(r"""
+    ## 2. Split the data: train / val / test
+
+    Yesterday we trained on `train_ds` and reported accuracy on `test_ds`.
+    That's fine for a one-shot sanity run — but as soon as you start *tuning*
+    (more epochs? augmentations? a different LR?) you're using the test set to
+    make decisions. That leaks information and your reported accuracy becomes
+    optimistic.
+
+    The standard fix: carve a **validation** set out of the training data and
+    keep the test set sealed until the very end of the notebook.
+
+    - **train** → gradient updates
+    - **val** → watch during training, pick the best checkpoint
+    - **test** → look at *once*, at the end
+    """),
+    code("""
+    from torch.utils.data import DataLoader, random_split
+    import torchvision
+    from torchvision import transforms as T
+
+    from cvcourse import get_device
+
+    device = get_device()
+    print("device:", device)
+
+    pipeline = T.Compose([T.ToTensor(), T.Normalize((0.2860,), (0.3530,))])
+    full_train = torchvision.datasets.FashionMNIST(
+        "../data", train=True, download=True, transform=pipeline,
+    )
+    test_ds = torchvision.datasets.FashionMNIST(
+        "../data", train=False, download=True, transform=pipeline,
+    )
+
+    # 54k / 6k split, deterministic seed so val is reproducible.
+    train_ds, val_ds = random_split(
+        full_train, [54_000, 6_000],
+        generator=torch.Generator().manual_seed(0),
+    )
+
+    train_loader = DataLoader(train_ds, batch_size=128, shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=256, shuffle=False, num_workers=0)
+    test_loader  = DataLoader(test_ds,  batch_size=256, shuffle=False, num_workers=0)
+
+    print(f"train {len(train_ds)}  val {len(val_ds)}  test {len(test_ds)}")
+    """),
+    md(r"""
+    ## 3. A real training loop, and the loss curves that come with it
+
+    Same five steps as yesterday (`forward → loss → backward → step → zero_grad`),
+    but now wrapped in two helpers and run for *enough* epochs to actually see
+    overfitting. After training, we plot train-vs-val loss and accuracy. The
+    shape of those curves is the single most useful debugging signal you have.
+
+    **Predict before you run:** at what epoch do you think train and val
+    accuracy will start to diverge?
+    """),
+    code("""
+    from tqdm.auto import tqdm
+
+
+    def train_one_epoch(model, loader, optimizer, device):
+        model.train()
+        total, correct, loss_sum = 0, 0, 0.0
+        for xb, yb in tqdm(loader, leave=False):
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            loss = F.cross_entropy(logits, yb)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            loss_sum += loss.item() * xb.size(0)
+            correct  += (logits.argmax(1) == yb).sum().item()
+            total    += xb.size(0)
+        return loss_sum / total, correct / total
+
+
+    @torch.no_grad()
+    def evaluate(model, loader, device):
+        model.eval()
+        total, correct, loss_sum = 0, 0, 0.0
+        for xb, yb in loader:
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            loss = F.cross_entropy(logits, yb)
+            loss_sum += loss.item() * xb.size(0)
+            correct  += (logits.argmax(1) == yb).sum().item()
+            total    += xb.size(0)
+        return loss_sum / total, correct / total
+
+
+    def fit(model, train_loader, val_loader, optimizer, epochs, device, scheduler=None):
+        history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
+        for epoch in range(1, epochs + 1):
+            tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
+            va_loss, va_acc = evaluate(model, val_loader, device)
+            history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
+            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["lr"].append(optimizer.param_groups[0]["lr"])
+            if scheduler is not None:
+                scheduler.step()
+            print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
+                  f"val {va_loss:.3f}/{va_acc:.3f}  lr {history['lr'][-1]:.4f}")
+        return history
+    """),
+    code("""
+    import matplotlib.pyplot as plt
+
+
+    def plot_history(history, title=""):
+        epochs = range(1, len(history["train_loss"]) + 1)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 3.5))
+        axes[0].plot(epochs, history["train_loss"], "-o", label="train")
+        axes[0].plot(epochs, history["val_loss"],   "-o", label="val")
+        axes[0].set_xlabel("epoch"); axes[0].set_ylabel("loss"); axes[0].legend()
+        axes[1].plot(epochs, history["train_acc"], "-o", label="train")
+        axes[1].plot(epochs, history["val_acc"],   "-o", label="val")
+        axes[1].set_xlabel("epoch"); axes[1].set_ylabel("accuracy"); axes[1].legend()
+        if title:
+            fig.suptitle(title)
+        fig.tight_layout()
+        plt.show()
+    """),
+    code("""
+    model = SmallCNN().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    history_base = fit(model, train_loader, val_loader, optimizer, epochs=10, device=device)
+    plot_history(history_base, title="SmallCNN — no regularization")
+    """),
+    md(r"""
+    Classic overfitting pattern: train loss keeps falling while val loss
+    flattens (and eventually climbs). Train accuracy pulls ahead of val
+    accuracy. The model is memorizing the training set.
+
+    Sections 4–6 each introduce one tool to push that gap back down.
+    """),
+    md(r"""
+    ## 4. Architecture upgrades: BatchNorm + global average pooling
+
+    Two cheap changes to the architecture:
+
+    - **BatchNorm** after each conv normalizes activations per mini-batch.
+      Training is more stable, you can push the learning rate higher, and it
+      acts as a mild regularizer.
+    - **Global average pooling** replaces `Flatten + big Linear` with a single
+      `AdaptiveAvgPool2d(1)`. The feature map collapses to one number per
+      channel, and the head becomes a tiny `Linear(C, n_classes)`. Far fewer
+      parameters, less prone to overfit.
+    """),
+    code("""
+    from cvcourse import count_params
+
+
+    class SmallCNN_v2(nn.Module):
+        def __init__(self, n_classes: int = 10):
+            super().__init__()
+            self.conv1 = nn.Conv2d(1, 16, 3, padding=1)
+            self.bn1   = nn.BatchNorm2d(16)
+            self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
+            self.bn2   = nn.BatchNorm2d(32)
+            self.gap   = nn.AdaptiveAvgPool2d(1)           # (N, 32, 7, 7) -> (N, 32, 1, 1)
+            self.fc    = nn.Linear(32, n_classes)
+
+        def forward(self, x):
+            x = F.max_pool2d(F.relu(self.bn1(self.conv1(x))), 2)
+            x = F.max_pool2d(F.relu(self.bn2(self.conv2(x))), 2)
+            x = self.gap(x).flatten(1)
+            return self.fc(x)
+
+
+    print("SmallCNN    params:", count_params(SmallCNN()))
+    print("SmallCNN_v2 params:", count_params(SmallCNN_v2()))
+    """),
+    code("""
+    model = SmallCNN_v2().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    history_v2 = fit(model, train_loader, val_loader, optimizer, epochs=10, device=device)
+    plot_history(history_v2, title="SmallCNN_v2 — BatchNorm + GAP")
+    """),
+    md(r"""
+    Fewer parameters, similar (often better) val accuracy, and a smaller
+    train/val gap. GAP is doing a lot of the work — the model can no longer
+    memorize via a fat fully-connected layer.
+    """),
+    md(r"""
+    ## 5. Augmentations that actually help on FashionMNIST
+
+    Augmentations show the model slightly different versions of each image
+    every epoch. The training distribution effectively grows, the model can't
+    memorize as easily, and the val/train gap shrinks.
+
+    Pick augmentations that match the **invariances of the task**:
+
+    - `RandomHorizontalFlip()` — a sneaker flipped left/right is still a
+      sneaker. ✅
+    - `RandomCrop(28, padding=2)` — pad then crop simulates small shifts. ✅
+    - `RandomVerticalFlip()` — a bag upside-down is a weird bag. ❌
+    - `ColorJitter(...)` — useless on single-channel grayscale. ❌
+
+    The augmentations only apply to the *training* pipeline. Val and test stay
+    deterministic.
+    """),
+    code("""
+    train_pipeline = T.Compose([
+        T.RandomCrop(28, padding=2),
+        T.RandomHorizontalFlip(),
+        T.ToTensor(),
+        T.Normalize((0.2860,), (0.3530,)),
+    ])
+
+    # Re-wrap the underlying dataset with the augmented pipeline. We rebuild
+    # train_ds from scratch so we can change the transform; val_ds keeps the
+    # plain pipeline.
+    aug_full_train = torchvision.datasets.FashionMNIST(
+        "../data", train=True, download=False, transform=train_pipeline,
+    )
+    aug_train_ds, _ = random_split(
+        aug_full_train, [54_000, 6_000],
+        generator=torch.Generator().manual_seed(0),  # same seed -> same split
+    )
+    aug_train_loader = DataLoader(aug_train_ds, batch_size=128, shuffle=True, num_workers=0)
+    """),
+    code("""
+    model = SmallCNN_v2().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    history_aug = fit(model, aug_train_loader, val_loader, optimizer, epochs=10, device=device)
+    plot_history(history_aug, title="SmallCNN_v2 + augmentations")
+    """),
+    md(r"""
+    Train accuracy is *lower* now (the model sees harder, varied inputs) but
+    val accuracy is up and the gap is smaller. That's the trade you want.
+    """),
+    md(r"""
+    ## 6. Learning-rate schedules
+
+    A single fixed learning rate is rarely optimal. The classic move: start
+    high (fast progress), end low (fine adjustments). **Cosine annealing**
+    decays smoothly from the initial LR to (near) zero over the training run;
+    `StepLR` drops the LR by a factor every N epochs.
+
+    Couple a schedule with what you already have and you'll typically see one
+    or two more accuracy points for free.
+    """),
+    code("""
+    EPOCHS = 10
+    model = SmallCNN_v2().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+
+    history_sched = fit(
+        model, aug_train_loader, val_loader, optimizer,
+        epochs=EPOCHS, device=device, scheduler=scheduler,
+    )
+    plot_history(history_sched, title="+ cosine LR schedule")
+
+    plt.figure(figsize=(5, 3))
+    plt.plot(range(1, EPOCHS + 1), history_sched["lr"], "-o")
+    plt.xlabel("epoch"); plt.ylabel("lr"); plt.title("cosine annealing"); plt.show()
+    """),
+    md(r"""
+    ## 7. Checkpoints — keep your best model, then look at test *once*
+
+    During a long training run the best val accuracy often happens a few
+    epochs before the end. Save the weights whenever val improves; at the
+    end, reload that checkpoint and report the sealed test accuracy.
+
+    We save `state_dict()` (the tensors only) — not the whole model object.
+    `state_dict` checkpoints are portable across code refactors and are the
+    standard way to persist a PyTorch model.
+    """),
+    code("""
+    from pathlib import Path
+
+
+    def fit_with_best(model, train_loader, val_loader, optimizer, epochs, device,
+                     scheduler=None, ckpt_path="best.pt"):
+        history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
+        best_val_acc = 0.0
+        for epoch in range(1, epochs + 1):
+            tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
+            va_loss, va_acc = evaluate(model, val_loader, device)
+            history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
+            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["lr"].append(optimizer.param_groups[0]["lr"])
+            if scheduler is not None:
+                scheduler.step()
+            improved = va_acc > best_val_acc
+            if improved:
+                best_val_acc = va_acc
+                torch.save(model.state_dict(), ckpt_path)
+            print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
+                  f"val {va_loss:.3f}/{va_acc:.3f}  "
+                  f"{'*saved*' if improved else ''}")
+        return history, best_val_acc
+
+
+    EPOCHS = 10
+    ckpt_path = Path("best_smallcnn_v2.pt")
+
+    model = SmallCNN_v2().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+
+    history_final, best_val_acc = fit_with_best(
+        model, aug_train_loader, val_loader, optimizer,
+        epochs=EPOCHS, device=device, scheduler=scheduler, ckpt_path=ckpt_path,
+    )
+    print(f"\\nbest val accuracy: {best_val_acc:.3f}")
+    """),
+    code("""
+    # Reload the best checkpoint into a fresh model — this is what you'd do at
+    # inference time, after training has finished.
+    final_model = SmallCNN_v2().to(device)
+    final_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+
+    test_loss, test_acc = evaluate(final_model, test_loader, device)
+    print(f"sealed test accuracy: {test_acc:.3f}")
+    """),
+    md(r"""
+    That number — and *only* that number — is what you'd report. We touched
+    the test set exactly once.
+
+    ## What changed from notebook 04
+
+    | | nb 04 | nb 05 |
+    |---|---|---|
+    | Model | `nn.Sequential` | `nn.Module` subclass |
+    | Splits | train / test | train / **val** / test |
+    | Loss curves | print only | plotted, used to spot overfitting |
+    | Architecture | plain conv stack | + BatchNorm + GAP |
+    | Augmentation | none | `RandomCrop` + `RandomHorizontalFlip` |
+    | LR | fixed 1e-3 | cosine-annealed |
+    | Best model | last epoch | checkpointed on val improvement |
+
+    > **Next notebook (06):** instead of training a CNN from scratch, we'll
+    > start from a pretrained backbone and adapt it — far less data, far more
+    > accuracy.
+    """),
 ]
 
 N06 = skeleton(
