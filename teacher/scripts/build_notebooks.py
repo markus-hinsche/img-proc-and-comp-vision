@@ -12,6 +12,7 @@ No external dependencies: stdlib only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import textwrap
 from pathlib import Path
@@ -21,10 +22,23 @@ NB_DIR = ROOT / "notebooks"
 NB_DIR.mkdir(exist_ok=True)
 
 
+def _cell_id(kind: str, text: str) -> str:
+    """Stable 8-char id derived from cell kind + content.
+
+    nbformat 4.5+ requires every cell to have an id. If we omit it, Jupyter
+    assigns a random one on first open — which then changes again on the next
+    rebuild, producing meaningless diffs. A content-hash id keeps unchanged
+    cells stable across rebuilds.
+    """
+    h = hashlib.sha1(f"{kind}\0{text}".encode("utf-8")).hexdigest()
+    return h[:8]
+
+
 def md(text: str) -> dict:
     text = textwrap.dedent(text).strip("\n")
     return {
         "cell_type": "markdown",
+        "id": _cell_id("markdown", text),
         "metadata": {},
         "source": _splitlines(text),
     }
@@ -34,6 +48,7 @@ def code(text: str) -> dict:
     text = textwrap.dedent(text).strip("\n")
     return {
         "cell_type": "code",
+        "id": _cell_id("code", text),
         "execution_count": None,
         "metadata": {},
         "outputs": [],
@@ -1818,18 +1833,399 @@ N07 = [
     """),
 ]
 
-N08 = skeleton(
-    "08 — Attention, the gentle introduction",
-    "Day 3 · Notebook 1 of 3",
-    "Before ViTs make sense, attention has to make sense. We build it from scratch on tiny tensors so it's no longer a black box.",
-    [
-        "Why CNNs are local, and why that's a limit",
-        "Queries, keys, values on a toy example",
-        "Scaled dot-product attention by hand",
-        "Multi-head attention — what 'head' actually means",
-        "Sanity: implementing it in ~30 lines",
-    ],
-)
+N08 = [
+    md(r"""
+    # 08 — Introduction to ViT
+
+    **Day 3 · Notebook 1 of 3**
+
+    CNNs were the only show in town for image classification until 2020. Then
+    the Vision Transformer (ViT, Dosovitskiy et al.) showed that pure
+    attention — no convolutions — could match or beat ResNets *given enough
+    data*.
+
+    Today we build a ViT from scratch in PyTorch and train it on a
+    cats-vs-dogs binary task carved out of CIFAR-10. The architecture is the
+    same one running inside CLIP, DINOv2, SAM, and the visual towers of every
+    multimodal model.
+
+    ## Objectives
+
+    - Cut an image into **patches** and embed each as a token.
+    - Add **positional embeddings** so the model knows patch order.
+    - Implement **scaled dot-product attention** on a toy tensor (the
+      ~6 lines at the heart of every transformer).
+    - Stack **transformer encoder blocks** with LayerNorm → Attention → MLP.
+    - Train the ViT on CIFAR cats-vs-dogs and compare honestly to a small CNN.
+    - Understand why a tiny ViT *loses* to a tiny CNN — and what changes that.
+    """),
+    md(r"""
+    ## 1. Data — CIFAR-10 filtered to cats vs dogs
+
+    The original TF notebook used `tensorflow_datasets.cats_vs_dogs`. PyTorch
+    doesn't ship that one, but `torchvision` does ship CIFAR-10 — and
+    classes 3 (cat) and 5 (dog) are exactly what we want. ~10k train and 2k
+    test images after filtering. Plenty to train a 15k-parameter model.
+
+    We resize to **72×72** so 8×8 patches yield 9×9 = 81 tokens — same
+    geometry as the TF reference.
+    """),
+    code("""
+    import math
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.utils.data import DataLoader, Dataset
+    from torchvision import transforms as T
+    from torchvision.datasets import CIFAR10
+    from torchinfo import summary
+    from tqdm.auto import tqdm
+
+    from cvcourse import get_device, show_grid, plot_history
+
+    device = get_device()
+    print("device:", device)
+    """),
+    code("""
+    IMG_SIZE = 72
+
+    pipeline = T.Compose([
+        T.Resize((IMG_SIZE, IMG_SIZE)),
+        T.ToTensor(),
+    ])
+
+    cifar_train = CIFAR10("../data", train=True,  download=True, transform=pipeline)
+    cifar_test  = CIFAR10("../data", train=False, download=True, transform=pipeline)
+
+    # CIFAR-10 class indices: cat=3, dog=5. Remap to {0: cat, 1: dog}.
+    CAT, DOG = 3, 5
+    LABEL_MAP = {CAT: 0, DOG: 1}
+    class_names = ["cat", "dog"]
+
+    class CatsVsDogs(Dataset):
+        def __init__(self, base):
+            self.base = base
+            self.indices = [i for i, (_, y) in enumerate(base) if y in LABEL_MAP]
+
+        def __len__(self):
+            return len(self.indices)
+
+        def __getitem__(self, i):
+            x, y = self.base[self.indices[i]]
+            return x, LABEL_MAP[y]
+
+    train_ds = CatsVsDogs(cifar_train)
+    val_ds   = CatsVsDogs(cifar_test)
+    print(f"train {len(train_ds)}  val {len(val_ds)}")
+    """),
+    code("""
+    train_loader = DataLoader(train_ds, batch_size=128, shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=256, shuffle=False, num_workers=0)
+
+    xb, yb = next(iter(train_loader))
+    show_grid(xb[:8], titles=[class_names[y] for y in yb[:8]], cols=4)
+    """),
+    md(r"""
+    ## 2. Train/eval helpers (same as nb 05/06/07)
+
+    Re-defined so this notebook stands alone.
+    """),
+    code("""
+    def train_one_epoch(model, loader, optimizer, device):
+        model.train()
+        total, correct, loss_sum = 0, 0, 0.0
+        for xb, yb in tqdm(loader, leave=False):
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            loss = F.cross_entropy(logits, yb)
+            optimizer.zero_grad(); loss.backward(); optimizer.step()
+            loss_sum += loss.item() * xb.size(0)
+            correct  += (logits.argmax(1) == yb).sum().item()
+            total    += xb.size(0)
+        return loss_sum / total, correct / total
+
+
+    @torch.no_grad()
+    def evaluate(model, loader, device):
+        model.eval()
+        total, correct, loss_sum = 0, 0, 0.0
+        for xb, yb in loader:
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            loss = F.cross_entropy(logits, yb)
+            loss_sum += loss.item() * xb.size(0)
+            correct  += (logits.argmax(1) == yb).sum().item()
+            total    += xb.size(0)
+        return loss_sum / total, correct / total
+
+
+    def fit(model, train_loader, val_loader, optimizer, epochs, device):
+        history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
+        for epoch in range(1, epochs + 1):
+            tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
+            va_loss, va_acc = evaluate(model, val_loader, device)
+            history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
+            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["lr"].append(optimizer.param_groups[0]["lr"])
+            print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
+                  f"val {va_loss:.3f}/{va_acc:.3f}")
+        return history
+    """),
+    md(r"""
+    ## 3. CNN baseline
+
+    Before reaching for transformers, set the bar with a tiny CNN. Two
+    Conv→ReLU→Pool blocks, flatten, one Linear. ~18k parameters. This is the
+    "default" any reasonable engineer would try first on a small dataset.
+    """),
+    code("""
+    cnn = nn.Sequential(
+        nn.Conv2d(3, 32, 3), nn.ReLU(), nn.MaxPool2d(2),   # 72 -> 35
+        nn.Conv2d(32, 32, 3), nn.ReLU(), nn.MaxPool2d(2),  # 35 -> 16
+        nn.Flatten(),
+        nn.Linear(32 * 16 * 16, 2),
+    ).to(device)
+
+    summary(cnn, input_size=(1, 3, IMG_SIZE, IMG_SIZE), device=device)
+    """),
+    code("""
+    optimizer = torch.optim.Adam(cnn.parameters(), lr=1e-3)
+    history_cnn = fit(cnn, train_loader, val_loader, optimizer, epochs=5, device=device)
+    plot_history(history_cnn, title="Tiny CNN — cats vs dogs (CIFAR-10 subset)")
+    """),
+    md(r"""
+    Tiny CNN, low epoch count, decent val accuracy. The CNN's convolutions
+    *hard-code* two priors — translation equivariance and locality — that
+    a transformer has to *learn from data*. Hold on to that intuition.
+
+    # Vision Transformer
+
+    ## 4. Patches — slice the image into a sequence
+
+    An image isn't a sequence — until you cut it into one. For a 72×72 RGB
+    image and patch size 8, we get a **9×9 = 81 patches** of shape `(3, 8, 8)`.
+    Flattened, that's 81 tokens of dimension 3·8·8 = 192.
+
+    **The PyTorch trick.** Instead of explicitly extracting patches and then
+    projecting them with a `Linear` (the TF notebook's two-step), do both
+    operations in one `Conv2d` with `kernel_size = stride = patch_size`. This
+    is what timm, torchvision, and the original Dosovitskiy paper all do
+    (figure 1, "linear projection of flattened patches" is *literally* a
+    strided Conv2d).
+    """),
+    code("""
+    class PatchEmbedding(nn.Module):
+        def __init__(self, in_channels: int, patch_size: int, num_patches: int, embed_dim: int):
+            super().__init__()
+            self.num_patches = num_patches
+            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+            self.pos_embedding = nn.Embedding(num_patches, embed_dim)
+            # register a buffer of positions so .to(device) carries it along
+            self.register_buffer("positions", torch.arange(num_patches))
+
+        def forward(self, x):
+            # x: (B, 3, H, W) -> (B, D, H/p, W/p)
+            x = self.proj(x)
+            # -> (B, D, N) -> (B, N, D)
+            x = x.flatten(2).transpose(1, 2)
+            # add learned positional embedding to every batch item
+            x = x + self.pos_embedding(self.positions)
+            return x
+
+    patch_size  = 8
+    num_patches = (IMG_SIZE // patch_size) ** 2   # 9*9 = 81
+    embed_dim   = 16
+
+    pe = PatchEmbedding(3, patch_size, num_patches, embed_dim).to(device)
+    xb, _ = next(iter(train_loader))
+    out = pe(xb.to(device))
+    print(f"in {tuple(xb.shape)} -> tokens {tuple(out.shape)}")  # (B, 81, 16)
+    """),
+    code("""
+    # Visualize the 81 patches of a single image.
+    import matplotlib.pyplot as plt
+
+    img = xb[0]  # (3, 72, 72)
+    n = IMG_SIZE // patch_size
+    fig, axes = plt.subplots(n, n, figsize=(6, 6))
+    for i in range(n):
+        for j in range(n):
+            patch = img[:, i*patch_size:(i+1)*patch_size, j*patch_size:(j+1)*patch_size]
+            axes[i, j].imshow(patch.permute(1, 2, 0))
+            axes[i, j].axis("off")
+    plt.suptitle("81 patches (9x9 grid of 8x8 patches)")
+    plt.tight_layout(); plt.show()
+    """),
+    md(r"""
+    ## 5. Attention — the 5-minute explainer
+
+    Each of the 81 tokens asks every other token *"how relevant are you to
+    me?"* and produces a weighted sum of their **values**. Three learned
+    projections do all the work:
+
+    - **Query** Q — what this token is looking for.
+    - **Key** K — what each token *advertises* about itself.
+    - **Value** V — what each token *carries* if attended to.
+
+    The attention weights are softmax over `Q · Kᵀ / √d`. The output is those
+    weights times V. That's it. Walk through it once on a toy tensor.
+    """),
+    code("""
+    # Toy: 1 batch, 4 tokens, 8-d embeddings.
+    torch.manual_seed(0)
+    B, N, D = 1, 4, 8
+    x = torch.randn(B, N, D)
+
+    W_q = torch.randn(D, D)
+    W_k = torch.randn(D, D)
+    W_v = torch.randn(D, D)
+
+    Q = x @ W_q
+    K = x @ W_k
+    V = x @ W_v
+
+    scores  = Q @ K.transpose(-1, -2) / math.sqrt(D)   # (B, N, N)
+    weights = scores.softmax(dim=-1)                   # rows sum to 1
+    out     = weights @ V                              # (B, N, D)
+
+    print("attention weights (rows sum to 1):")
+    print(weights.squeeze(0).round(decimals=2))
+    print("output shape:", out.shape)
+    """),
+    code("""
+    plt.imshow(weights.squeeze(0).detach(), cmap="viridis")
+    plt.colorbar()
+    plt.title("Toy attention matrix (4 tokens)")
+    plt.xlabel("attended-to token"); plt.ylabel("query token")
+    plt.show()
+    """),
+    md(r"""
+    That's **single-head** attention. **Multi-head** attention runs `h` of
+    these in parallel on lower-dimensional projections (`D / h` per head) and
+    concatenates the outputs. Each head can learn a different relationship
+    pattern — e.g. one head specializes in "look at neighbors", another in
+    "look at the center". `nn.MultiheadAttention` is the batteries-included
+    PyTorch version.
+
+    ## 6. The transformer encoder block
+
+    The standard *pre-norm* recipe (more stable than the post-norm variant
+    in the original "Attention Is All You Need" paper, and what every modern
+    ViT uses):
+
+    ```
+    x = x + Attention(LayerNorm(x))
+    x = x + MLP(LayerNorm(x))
+    ```
+
+    > Sidebar: the TF reference notebook has a `# BUG FIX!` comment on the
+    > residual — it's a real bug. If you forget to add the residual back in,
+    > gradients can't flow past the attention layer and the network refuses
+    > to train. Residual connections are non-negotiable in transformers.
+    """),
+    code("""
+    class TransformerEncoder(nn.Module):
+        def __init__(self, embed_dim: int, num_heads: int, mlp_hidden: int):
+            super().__init__()
+            self.ln1 = nn.LayerNorm(embed_dim)
+            self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+            self.ln2 = nn.LayerNorm(embed_dim)
+            self.mlp = nn.Sequential(
+                nn.Linear(embed_dim, mlp_hidden),
+                nn.ReLU(),
+                nn.Linear(mlp_hidden, embed_dim),
+            )
+
+        def forward(self, x):
+            # pre-norm + self-attention + residual
+            h = self.ln1(x)
+            attn_out, _ = self.attn(h, h, h, need_weights=False)
+            x = x + attn_out
+            # pre-norm + MLP + residual
+            x = x + self.mlp(self.ln2(x))
+            return x
+    """),
+    md(r"""
+    ## 7. Assemble the ViT
+    """),
+    code("""
+    class ViT(nn.Module):
+        def __init__(self, image_size=72, patch_size=8, in_channels=3,
+                     embed_dim=16, num_heads=4, num_encoders=2, num_classes=2):
+            super().__init__()
+            num_patches = (image_size // patch_size) ** 2
+            self.patch_embed = PatchEmbedding(in_channels, patch_size, num_patches, embed_dim)
+            self.encoders = nn.Sequential(*[
+                TransformerEncoder(embed_dim, num_heads, mlp_hidden=embed_dim * 2)
+                for _ in range(num_encoders)
+            ])
+            self.head = nn.Linear(embed_dim, num_classes)
+
+        def forward(self, x):
+            x = self.patch_embed(x)         # (B, N, D)
+            x = self.encoders(x)            # (B, N, D)
+            x = x.mean(dim=1)               # global average pool over tokens -> (B, D)
+            return self.head(x)             # (B, num_classes)
+
+    vit = ViT().to(device)
+    summary(vit, input_size=(1, 3, IMG_SIZE, IMG_SIZE), device=device)
+    """),
+    md(r"""
+    ~15k trainable parameters — comparable to the CNN's 18k. Roughly head-to-head
+    on capacity, but **all the inductive bias the CNN gets for free, the ViT
+    has to learn**.
+
+    ## 8. Train the ViT
+    """),
+    code("""
+    optimizer = torch.optim.Adam(vit.parameters(), lr=1e-3)
+    history_vit = fit(vit, train_loader, val_loader, optimizer, epochs=10, device=device)
+    plot_history(history_vit, title="Tiny ViT — cats vs dogs (CIFAR-10 subset)")
+    """),
+    code("""
+    # Both runs on one chart.
+    plt.figure(figsize=(7, 4))
+    plt.plot(range(1, len(history_cnn["val_acc"]) + 1), history_cnn["val_acc"], "-o", label="tiny CNN")
+    plt.plot(range(1, len(history_vit["val_acc"]) + 1), history_vit["val_acc"], "-o", label="tiny ViT")
+    plt.xlabel("epoch"); plt.ylabel("val accuracy"); plt.legend(); plt.grid(True, alpha=0.3)
+    plt.title("CIFAR cats vs dogs — same parameter budget"); plt.show()
+    """),
+    md(r"""
+    ## 9. Why the tiny ViT loses
+
+    On this dataset the CNN wins, and that's the expected result. Three
+    reasons:
+
+    1. **Inductive bias.** CNNs hard-code translation equivariance and
+       locality — two priors that *are true* about natural images. ViT has
+       neither baked in; it must rediscover them from data.
+
+    2. **Data hunger.** The original ViT paper trained on JFT-300M (300M
+       proprietary images) to match a ResNet. On 10k images, you're in the
+       regime where the CNN's priors are worth more than the ViT's
+       flexibility.
+
+    3. **Regularization left on the table.** Real ViTs use augmentation,
+       dropout, stochastic depth, mixup, weight decay, and warmup-cosine LR
+       schedules. We omitted all of it to keep this notebook legible.
+
+    The take-away of Day 3: for small-data CV, **CNNs are still the default
+    choice**. ViTs shine when you have either a lot of data, or — much more
+    common — a **pretrained** ViT to fine-tune. That's exactly the recipe
+    you'll see in N09.
+
+    ## Wrap-up
+
+    You've built a Vision Transformer from scratch: patchify, embed with
+    learned positions, stack `LayerNorm → MultiheadAttention → MLP` blocks,
+    pool, classify. The same skeleton runs inside CLIP, DINOv2, SAM, and
+    every vision tower of every modern multimodal model.
+
+    > **Next notebook (09):** load a **pretrained** ViT via `timm` and
+    > fine-tune it on a small dataset. The transfer-learning recipe from
+    > N06, with attention instead of convolutions in the backbone.
+    """),
+]
 
 N09 = skeleton(
     "09 — Building a tiny Vision Transformer",
@@ -1868,7 +2264,7 @@ def main() -> None:
     write("05_training_cnn.ipynb", N05)
     write("06_transfer_learning.ipynb", N06)
     write("07_gradcam.ipynb", N07)
-    write("08_attention_intro.ipynb", N08)
+    write("08_intro_to_vit.ipynb", N08)
     write("09_building_vit.ipynb", N09)
     write("10_cnn_vs_vit.ipynb", N10)
 
