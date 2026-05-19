@@ -97,6 +97,48 @@ medical imaging, defect detection in manufacturing, satellite imagery.
 
 ---
 
+# Building models — PyTorch vs TensorFlow
+
+TF exposes three "APIs": **Sequential**, **Functional**, **Model subclass**.
+PyTorch collapses them into essentially two:
+
+| TF API           | PyTorch equivalent          | When to use it                                       |
+| ---------------- | --------------------------- | ---------------------------------------------------- |
+| Sequential       | `nn.Sequential(...)`        | Straight-line stack, no branching. Tiny demos.       |
+| Functional API   | `nn.Module` subclass        | The default — define layers, wire them in `forward`. |
+| Model subclass   | `nn.Module` subclass (same) | Same idea, same code.                                |
+
+Plus a PyTorch extra: **`torch.nn.functional`** (`F.relu`, `F.conv2d`, ...) —
+stateless ops you call directly inside `forward()`. No layer object needed.
+
+---
+
+# The two patterns side by side
+
+```python
+# 1. Sequential — only for linear stacks
+model = nn.Sequential(
+    nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+    nn.Flatten(), nn.Linear(16*14*14, 10),
+)
+
+# 2. nn.Module subclass — the workhorse. Branches, skips, anything.
+class CNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(1, 16, 3, padding=1)
+        self.head = nn.Linear(16*14*14, 10)
+    def forward(self, x):
+        x = F.relu(self.conv(x))
+        x = F.max_pool2d(x, 2)
+        return self.head(x.flatten(1))
+```
+
+**Rule of thumb:** start `Sequential`, switch to subclass the moment you need a
+skip connection, two heads, or any conditional flow.
+
+---
+
 <!-- _class: invert -->
 
 # Debugging CV code

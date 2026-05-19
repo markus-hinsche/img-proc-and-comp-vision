@@ -525,27 +525,21 @@ N04 = [
     md("""
     ## 2. Model
 
-    Two conv blocks, then a small classifier head. Use the shape rule to predict
-    output sizes *before* you run the cell.
+    Two conv blocks, then a small classifier head. We keep it simple by using
+    `nn.Sequential` — a straight-line stack of layers, no `forward()` method
+    needed. Perfect for a first CNN.
+
+    Use the shape rule to predict output sizes *before* you run the cell.
     """),
     code("""
-    class SmallCNN(nn.Module):
-        def __init__(self, n_classes: int = 10):
-            super().__init__()
-            self.features = nn.Sequential(
-                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),  # 28 -> 14
-                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2), # 14 -> 7
-            )
-            self.classifier = nn.Sequential(
-                nn.Flatten(),
-                nn.Linear(32 * 7 * 7, 64), nn.ReLU(),
-                nn.Linear(64, n_classes),
-            )
+    model = nn.Sequential(
+        nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),  # 28 -> 14
+        nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2), # 14 -> 7
+        nn.Flatten(),
+        nn.Linear(32 * 7 * 7, 64), nn.ReLU(),
+        nn.Linear(64, 10),
+    ).to(device)
 
-        def forward(self, x):
-            return self.classifier(self.features(x))
-
-    model = SmallCNN().to(device)
     print(model)
     print("trainable params:", count_params(model))
     """),
@@ -640,6 +634,10 @@ N04 = [
 
     You trained a CNN from scratch. Day 2 picks up here: deeper architectures,
     transfer learning, and explainability.
+
+    > **Next notebook (05):** we'll rewrite this same model as an `nn.Module`
+    > subclass so we can branch the forward pass, expose intermediate features,
+    > and attach hooks (needed for transfer learning and Grad-CAM).
     """),
 ]
 
@@ -656,19 +654,106 @@ def skeleton(title: str, day: str, intro: str, sections: list[str]) -> list[dict
     return cells
 
 
-N05 = skeleton(
-    "05 — Training a CNN, properly",
-    "Day 2 · Notebook 1 of 3",
-    "Take the Day 1 model further: better architecture, augmentations, learning-rate scheduling, and a clean train/val/test split.",
-    [
-        "Recap the Day 1 model and where it plateaus",
-        "Architecture: more conv blocks, BatchNorm, GAP head",
-        "Augmentations that actually help (RandomCrop, ColorJitter)",
-        "Learning-rate schedules (cosine, step)",
-        "Saving / loading checkpoints",
-        "Validating without leaking the test set",
-    ],
-)
+N05 = [
+    md(r"""
+    # 05 — Training a CNN, properly
+
+    **Day 2 · Notebook 1 of 3**
+
+    Take the Day 1 model further: a real `nn.Module`, better architecture,
+    augmentations, learning-rate scheduling, and a clean train/val/test split.
+
+    ## Objectives
+
+    - Rewrite yesterday's `nn.Sequential` model as an `nn.Module` subclass
+      and understand *why* you'd bother.
+    - Add BatchNorm and global average pooling.
+    - Use augmentations that actually help on FashionMNIST/CIFAR.
+    - Wire in a learning-rate schedule and checkpointing.
+    """),
+    md(r"""
+    ## 1. From `nn.Sequential` to `nn.Module`
+
+    Yesterday's model was a flat stack:
+
+    ```python
+    model = nn.Sequential(
+        nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+        nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+        nn.Flatten(),
+        nn.Linear(32 * 7 * 7, 64), nn.ReLU(),
+        nn.Linear(64, 10),
+    )
+    ```
+
+    `nn.Sequential` is great until you need to do *anything* non-linear in the
+    control flow: a skip connection, two heads, returning intermediate features
+    for Grad-CAM, conditional logic. For those you write an `nn.Module` subclass
+    and put the wiring in `forward()`.
+
+    **Mental model**
+
+    - `__init__` declares the **layers** (the things with learnable weights).
+    - `forward(x)` describes the **dataflow** — how an input becomes an output.
+
+    PyTorch tracks `self.<layer>` attributes automatically so
+    `model.parameters()`, `.to(device)`, and `state_dict()` all just work.
+    """),
+    code("""
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+
+    class SmallCNN(nn.Module):
+        def __init__(self, n_classes: int = 10):
+            super().__init__()
+            # Conv block 1
+            self.conv1 = nn.Conv2d(1, 16, 3, padding=1)
+            # Conv block 2
+            self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
+            # Classifier head
+            self.fc1 = nn.Linear(32 * 7 * 7, 64)
+            self.fc2 = nn.Linear(64, n_classes)
+
+        def forward(self, x):
+            x = F.max_pool2d(F.relu(self.conv1(x)), 2)  # 28 -> 14
+            x = F.max_pool2d(F.relu(self.conv2(x)), 2)  # 14 -> 7
+            x = x.flatten(1)
+            x = F.relu(self.fc1(x))
+            return self.fc2(x)
+
+
+    model = SmallCNN()
+    print(model)
+    """),
+    md(r"""
+    Same architecture as Day 1, same parameter count — but now you have a
+    `forward()` you can edit. For example, returning the feature map *before*
+    the classifier head (we'll need this for Grad-CAM in notebook 07):
+
+    ```python
+    def forward(self, x, return_features: bool = False):
+        x = F.max_pool2d(F.relu(self.conv1(x)), 2)
+        feats = F.max_pool2d(F.relu(self.conv2(x)), 2)  # (N, 32, 7, 7)
+        out = self.fc2(F.relu(self.fc1(feats.flatten(1))))
+        return (out, feats) if return_features else out
+    ```
+
+    You can't do that with `nn.Sequential`.
+    """),
+    md("## 2. Architecture upgrades: BatchNorm + global average pooling"),
+    code("# TODO: Architecture: more conv blocks, BatchNorm, GAP head"),
+    md("## 3. Augmentations that actually help (RandomCrop, ColorJitter)"),
+    code("# TODO: Augmentations"),
+    md("## 4. Learning-rate schedules (cosine, step)"),
+    code("# TODO: LR schedules"),
+    md("## 5. Saving / loading checkpoints"),
+    code("# TODO: checkpoints"),
+    md("## 6. Validating without leaking the test set"),
+    code("# TODO: train/val/test split"),
+    md("> ⚠️ Sections 2–6 still skeletons — flesh out after Day 1 dry-run."),
+]
 
 N06 = skeleton(
     "06 — Transfer learning",
