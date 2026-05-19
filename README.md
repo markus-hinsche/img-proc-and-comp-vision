@@ -138,9 +138,9 @@ print('OK')
 
 ## Slides
 
-Short decks live in `slides/` as Marp markdown (e.g. `slides/intro.md`,
-`slides/debugging.md`) and are built to PDF. See [SLIDES.md](SLIDES.md)
-for build commands, frontmatter, and syntax reference.
+Short decks live in `slides/` as Marp markdown (e.g. `slides/day1.md`,
+`slides/day3.md`) and are built to PDF. See [SLIDES.md](SLIDES.md) for
+build commands, frontmatter, and syntax reference.
 
 ---
 
@@ -195,7 +195,7 @@ If you'd rather edit `.ipynb` files directly in JupyterLab, that's fine too — 
 
 - **Visualize first, theory second.** CV is visual; tensors and feature maps should be on screen constantly.
 - **No abstraction magic.** Explicit training loops, no Lightning. Once `loss.backward()` and `optimizer.step()` click, abstractions are convenience, not mystery.
-- **Debug-friendly.** Tensor shapes, devices, normalization, `eval()` vs `train()` — taught explicitly, with intentional bugs. See `slides/debugging.md`.
+- **Debug-friendly.** Tensor shapes, devices, normalization, `eval()` vs `train()` — taught explicitly, with intentional bugs. See the debugging section in `slides/day1.md`.
 - **CPU-first.** GPU helps but is never required.
 
 ## Prerequisites

@@ -161,5 +161,6 @@ Right content
 
 ## Decks in this repo
 
-- `slides/intro.md` — course intro, agenda, whoami
+- `slides/day1.md` — course intro, agenda, whoami, debugging reference
+- `slides/day3.md` — Transformers for vision (attention, ViT, CNN vs ViT)
 - `slides/debugging.md` — CV debugging reference deck

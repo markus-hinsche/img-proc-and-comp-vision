@@ -16,18 +16,19 @@ From attention to ViT, and how it compares to CNNs
 
 # The Transformer block
 
-![bg right:55% fit](images/Transformer.png)
+![bg right:50% fit](images/Transformer.png)
 
-The original Transformer (Vaswani et al., 2017):
+Vaswani et al., 2017:
 
-- **Multi-head self-attention** — every token attends to every other token
-- **Feed-forward MLP** applied per token
+- **Multi-head self-attention** — every token attends to every other
+- **Feed-forward MLP** per token
 - **Residual + LayerNorm** around each sub-block
-- Stacks of these blocks, no recurrence, no convolution
+
+Stacks of these blocks. No recurrence, no convolution.
 
 <!--
 Originally for machine translation — sequence in, sequence out.
-The key idea: attention replaces both recurrence (RNNs) and locality (CNNs).
+Attention replaces both recurrence (RNNs) and locality (CNNs).
 -->
 
 ---
@@ -59,18 +60,24 @@ That's it — the rest of the architecture is essentially the same Transformer e
 
 ---
 
+<!-- _paginate: false -->
+
+![bg fit](images/ViT.png)
+
+---
+
 # Vision Transformer (ViT)
 
-![bg right:50% fit](images/ViT.png)
+![bg right:45% fit](images/ViT.png)
 
 Dosovitskiy et al., 2020 — *"An image is worth 16×16 words"*
 
 1. Split image into patches
-2. **Linear projection** of each patch → patch embedding
+2. **Linear projection** → patch embedding
 3. Prepend a learned `[CLS]` token
-4. Add **positional embeddings** (the model has no spatial prior!)
-5. Pass through $N$ Transformer encoder blocks
-6. The `[CLS]` token's final embedding → MLP head → class
+4. Add **positional embeddings** (no spatial prior!)
+5. $N$ Transformer encoder blocks
+6. `[CLS]` embedding → MLP head → class
 
 ---
 
