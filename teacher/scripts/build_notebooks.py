@@ -1440,18 +1440,383 @@ N06 = [
     """),
 ]
 
-N07 = skeleton(
-    "07 — Explaining what the CNN looks at",
-    "Day 2 · Notebook 3 of 3",
-    "Open the black box. GradCAM, saliency, and embeddings — three views of one model.",
-    [
-        "Recording activations with forward hooks",
-        "GradCAM from scratch (one screen of code)",
-        "Saliency / vanilla gradient",
-        "Embedding visualization (PCA or t-SNE)",
-        "Failure analysis: when explanations disagree with intuition",
-    ],
-)
+N07 = [
+    md(r"""
+    # 07 — Explaining what the CNN looks at
+
+    **Day 2 · Notebook 3 of 3**
+
+    Your fine-tuned ResNet18 says "bee" with 99% confidence. *Why?*
+
+    Three techniques, increasing sophistication, decreasing magic:
+
+    1. **Saliency** — the raw gradient of the score w.r.t. the input pixels.
+    2. **Grad-CAM** — the workhorse. Weighted last-conv activations, ~20 lines.
+    3. **Embedding viz** — t-SNE of the penultimate features to *see* class
+       separation.
+
+    Then the punchline: a model that's right for the *wrong* reason.
+
+    ## Objectives
+
+    - Use forward and backward **hooks** to capture activations and gradients.
+    - Implement **Grad-CAM** from scratch (no `captum`, no `pytorch-grad-cam`).
+    - Generate **saliency** maps with one autograd call.
+    - Project the **penultimate embeddings** to 2D with t-SNE.
+    - Spot a case where the model is **right for the wrong reason**.
+    """),
+    md(r"""
+    ## 1. Reload the fine-tuned model
+
+    N07 stands alone — we re-fine-tune ResNet18 on Hymenoptera in a few epochs
+    so this notebook can be run independently. Same recipe as N06.
+    """),
+    code("""
+    import urllib.request, zipfile
+    from pathlib import Path
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.utils.data import DataLoader
+    from torchvision.datasets import ImageFolder
+    from torchvision.models import resnet18, ResNet18_Weights
+    from tqdm.auto import tqdm
+
+    from cvcourse import get_device, show_grid
+
+    device = get_device()
+    print("device:", device)
+
+    DATA_DIR = Path("../data/hymenoptera_data")
+    if not DATA_DIR.exists():
+        url = "https://download.pytorch.org/tutorial/hymenoptera_data.zip"
+        zip_path = Path("../data/hymenoptera_data.zip")
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(url, zip_path)
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(zip_path.parent)
+        zip_path.unlink()
+
+    weights = ResNet18_Weights.IMAGENET1K_V1
+    preprocess = weights.transforms()
+
+    train_ds = ImageFolder(DATA_DIR / "train", transform=preprocess)
+    val_ds   = ImageFolder(DATA_DIR / "val",   transform=preprocess)
+    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=32, shuffle=False, num_workers=0)
+    class_names = train_ds.classes
+    print(f"train {len(train_ds)}  val {len(val_ds)}  classes {class_names}")
+    """),
+    code("""
+    # Build ResNet18, swap head, fine-tune ~3 epochs.
+    model = resnet18(weights=weights)
+    model.fc = nn.Linear(model.fc.in_features, len(class_names))
+    model = model.to(device)
+
+    optimizer = torch.optim.AdamW([
+        {"params": model.fc.parameters(),                                   "lr": 1e-3},
+        {"params": [p for n, p in model.named_parameters() if not n.startswith("fc.")], "lr": 1e-4},
+    ])
+
+    for epoch in range(1, 4):
+        model.train()
+        for xb, yb in tqdm(train_loader, leave=False, desc=f"ep{epoch}"):
+            xb, yb = xb.to(device), yb.to(device)
+            loss = F.cross_entropy(model(xb), yb)
+            optimizer.zero_grad(); loss.backward(); optimizer.step()
+
+        model.eval()
+        correct = total = 0
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                correct += (model(xb).argmax(1) == yb).sum().item()
+                total   += xb.size(0)
+        print(f"epoch {epoch}  val acc {correct/total:.3f}")
+    """),
+    md(r"""
+    ## 2. Forward hooks — recording activations
+
+    PyTorch doesn't store intermediate activations by default. A **hook** is a
+    function you attach to a module that runs every time the module's
+    forward (or backward) is called. Use it to peek inside without rewriting
+    the model.
+
+    For Grad-CAM we need the activations of the **last conv block**. On
+    ResNet18 that's `layer4` — output shape `(B, 512, 7, 7)` for 224×224 input.
+    """),
+    code("""
+    activations = {}
+
+    def save_activation(name):
+        def hook(module, input, output):
+            activations[name] = output.detach()
+        return hook
+
+    handle = model.layer4.register_forward_hook(save_activation("layer4"))
+
+    # One image, one forward pass.
+    xb, yb = next(iter(val_loader))
+    xb = xb.to(device)
+    with torch.no_grad():
+        logits = model(xb[:1])
+    print("layer4 activations:", activations["layer4"].shape)  # (1, 512, 7, 7)
+    handle.remove()  # always remove hooks when done
+    """),
+    md(r"""
+    Bridge: now we also need gradients of the class score w.r.t. those
+    activations. Same idea, **backward** hook.
+
+    ## 3. Grad-CAM from scratch
+
+    One-paragraph intuition: each of the 512 channels in `layer4` is a learned
+    feature detector. The gradient of `score["bee"]` w.r.t. each channel tells
+    us how *much* that channel contributed. **Average the gradient over the
+    spatial dims to get one weight per channel**, take a weighted sum of the
+    channel feature maps, ReLU it (we only care about positive contributions),
+    and upsample to the input size. Done.
+    """),
+    code("""
+    class GradCAM:
+        def __init__(self, model, target_layer):
+            self.model = model
+            self.acts = None
+            self.grads = None
+            self.h1 = target_layer.register_forward_hook(self._save_acts)
+            self.h2 = target_layer.register_full_backward_hook(self._save_grads)
+
+        def _save_acts(self, module, input, output):
+            self.acts = output.detach()
+
+        def _save_grads(self, module, grad_input, grad_output):
+            self.grads = grad_output[0].detach()
+
+        def __call__(self, x, class_idx=None):
+            self.model.eval()
+            self.model.zero_grad()
+            logits = self.model(x)
+            if class_idx is None:
+                class_idx = int(logits.argmax(1).item())
+            score = logits[0, class_idx]
+            score.backward()
+
+            # weights: global-avg-pool the gradients -> one scalar per channel
+            weights = self.grads.mean(dim=(2, 3), keepdim=True)   # (1, C, 1, 1)
+            cam = (weights * self.acts).sum(dim=1, keepdim=True)  # (1, 1, h, w)
+            cam = F.relu(cam)
+            cam = F.interpolate(cam, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            cam = cam.squeeze().cpu().numpy()
+            cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+            return cam, class_idx
+
+        def close(self):
+            self.h1.remove(); self.h2.remove()
+
+    gradcam = GradCAM(model, model.layer4)
+    """),
+    code("""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # ImageNet normalization (what preprocess applied) — invert for display.
+    IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
+    IMAGENET_STD  = np.array([0.229, 0.224, 0.225])
+
+    def denorm(t):
+        # t: (3, H, W) tensor, normalized. -> (H, W, 3) numpy in [0, 1].
+        img = t.cpu().numpy().transpose(1, 2, 0)
+        img = img * IMAGENET_STD + IMAGENET_MEAN
+        return np.clip(img, 0, 1)
+
+    def overlay(img, cam, alpha=0.5):
+        plt.imshow(img)
+        plt.imshow(cam, cmap="jet", alpha=alpha)
+        plt.axis("off")
+    """),
+    code("""
+    # Pick a few val images and visualize Grad-CAM for the predicted class.
+    xb, yb = next(iter(val_loader))
+    n = 4
+    fig, axes = plt.subplots(2, n, figsize=(3 * n, 6))
+    for i in range(n):
+        x = xb[i:i+1].to(device)
+        cam, pred_idx = gradcam(x, class_idx=None)
+        img = denorm(xb[i])
+        true_name = class_names[yb[i].item()]
+        pred_name = class_names[pred_idx]
+        mark = "OK" if pred_idx == yb[i].item() else "WRONG"
+
+        plt.sca(axes[0, i]); plt.imshow(img); plt.axis("off")
+        plt.title(f"true: {true_name}")
+        plt.sca(axes[1, i]); overlay(img, cam)
+        plt.title(f"pred: {pred_name} [{mark}]")
+    plt.tight_layout(); plt.show()
+    """),
+    md(r"""
+    Where does the heatmap land? For a correctly-classified bee it usually
+    sits on the body or wings; for an ant, on the body and legs. When it lands
+    on the *background* — flower petals, grass, dirt — that's a warning sign
+    (we'll come back to that in §6).
+
+    ## 4. Saliency — the simplest gradient
+
+    Grad-CAM smooths over a 7×7 grid. Saliency is the opposite extreme:
+    gradient of the class score w.r.t. **each input pixel**. Noisy but
+    pixel-accurate.
+
+    ```
+    grad = ∂ logits[class] / ∂ image
+    saliency = grad.abs().max(over channels)
+    ```
+    """),
+    code("""
+    def saliency(model, x, class_idx=None):
+        model.eval()
+        x = x.clone().detach().requires_grad_(True)
+        logits = model(x)
+        if class_idx is None:
+            class_idx = int(logits.argmax(1).item())
+        model.zero_grad()
+        logits[0, class_idx].backward()
+        # x.grad: (1, 3, H, W) -> max over channels -> (H, W)
+        sal = x.grad.abs().max(dim=1)[0].squeeze().cpu().numpy()
+        sal = (sal - sal.min()) / (sal.max() - sal.min() + 1e-8)
+        return sal, class_idx
+
+    fig, axes = plt.subplots(3, n, figsize=(3 * n, 9))
+    for i in range(n):
+        x = xb[i:i+1].to(device)
+        sal, _      = saliency(model, x)
+        cam, pred   = gradcam(x)
+        img = denorm(xb[i])
+
+        plt.sca(axes[0, i]); plt.imshow(img); plt.axis("off")
+        plt.title(class_names[yb[i].item()])
+        plt.sca(axes[1, i]); plt.imshow(sal, cmap="hot"); plt.axis("off")
+        plt.title("saliency")
+        plt.sca(axes[2, i]); overlay(img, cam); plt.title("Grad-CAM")
+    plt.tight_layout(); plt.show()
+    """),
+    md(r"""
+    Saliency is *where* at the pixel level — Grad-CAM is *where* at the
+    feature-map level. Saliency tends to look like edge noise; Grad-CAM tends
+    to highlight semantically meaningful blobs. In practice Grad-CAM is the
+    one you'll reach for.
+
+    ## 5. Embedding visualization
+
+    Drop the classifier head. The penultimate vector (512-d for ResNet18,
+    after `avgpool`) is what the model thinks the *image* is — independent of
+    the final ant/bee decision. If those vectors cluster cleanly by class,
+    the model has learned a useful representation.
+    """),
+    code("""
+    from sklearn.manifold import TSNE
+
+    feats = {}
+    def grab_feats(module, input, output):
+        feats["x"] = output.detach()
+
+    h = model.avgpool.register_forward_hook(grab_feats)
+
+    all_feats, all_labels = [], []
+    model.eval()
+    with torch.no_grad():
+        for xb_, yb_ in val_loader:
+            _ = model(xb_.to(device))
+            all_feats.append(feats["x"].flatten(1).cpu())
+            all_labels.append(yb_)
+    h.remove()
+
+    X = torch.cat(all_feats).numpy()    # (N, 512)
+    y = torch.cat(all_labels).numpy()
+    print("embeddings:", X.shape)
+
+    Z = TSNE(n_components=2, perplexity=10, init="pca", random_state=0).fit_transform(X)
+
+    plt.figure(figsize=(6, 5))
+    for c, name in enumerate(class_names):
+        plt.scatter(Z[y == c, 0], Z[y == c, 1], label=name, s=30, alpha=0.7)
+    plt.legend(); plt.title("t-SNE of penultimate features (val set)"); plt.show()
+    """),
+    md(r"""
+    Two clean clusters → the model has learned an ant-vs-bee axis in feature
+    space. The classifier head is just drawing a line through it.
+
+    ## 6. Right for the wrong reason
+
+    Accuracy hides a lot. On Hymenoptera, the two classes have very different
+    *backgrounds* — bees often on flowers, ants often on dirt or leaves. A
+    model can shortcut: classify the **background**, not the insect.
+
+    Let's scan the val set and find images where the model got it right but
+    Grad-CAM lit up *outside* a centered crop — a rough proxy for "looking at
+    the background".
+    """),
+    code("""
+    # Crude heuristic: how much of Grad-CAM's mass sits inside the center 50% box?
+    def center_mass_fraction(cam, frac=0.5):
+        h, w = cam.shape
+        ph, pw = int(h * (1 - frac) / 2), int(w * (1 - frac) / 2)
+        center = cam[ph:h-ph, pw:w-pw]
+        return center.sum() / (cam.sum() + 1e-8)
+
+    suspects = []
+    model.eval()
+    for xb_, yb_ in val_loader:
+        for i in range(xb_.size(0)):
+            x = xb_[i:i+1].to(device)
+            cam, pred = gradcam(x)
+            if pred == yb_[i].item():            # correct prediction
+                cmf = center_mass_fraction(cam)
+                if cmf < 0.35:                    # heatmap mostly off-center
+                    suspects.append((xb_[i].clone(), yb_[i].item(), pred, cam, cmf))
+        if len(suspects) >= 4:
+            break
+
+    print(f"found {len(suspects)} suspicious 'correct' predictions")
+    fig, axes = plt.subplots(1, min(4, len(suspects)), figsize=(3 * min(4, len(suspects)), 3))
+    if len(suspects) == 1:
+        axes = [axes]
+    for ax, (img_t, true_c, pred_c, cam, cmf) in zip(axes, suspects[:4]):
+        plt.sca(ax); overlay(denorm(img_t), cam)
+        plt.title(f"{class_names[pred_c]}  center={cmf:.2f}")
+    plt.tight_layout(); plt.show()
+    """),
+    md(r"""
+    Look at those heatmaps. The model *predicted correctly* but the
+    explanation says it looked at petals, leaves, or dirt — not the insect.
+    That's a **shortcut**: the model learned a background prior, not the
+    object. On out-of-distribution images (a bee on concrete, an ant on a
+    flower) it would likely fail.
+
+    Famous examples of the same failure mode:
+
+    - **Husky vs. wolf** — classifier learned to detect *snow*, not the animal.
+    - **Pneumonia X-ray** — model learned to read the hospital marker tag,
+      because each hospital's prevalence differed.
+    - **Skin lesion benign/malignant** — model learned that dermatologists
+      put a **ruler** next to suspicious lesions.
+
+    Accuracy alone wouldn't have caught any of those. Grad-CAM would have.
+
+    ## Wrap-up
+
+    Three views of one model: pixels (saliency), regions (Grad-CAM), and
+    representations (t-SNE). They don't tell you *what* to fix — they tell you
+    *where* to look. Use them on every model you ship.
+
+    > **Next notebook (08 — Day 3):** **attention**. Where Grad-CAM bolts
+    > "where is the model looking" on after training, attention bakes it
+    > into the architecture itself. We'll build it from scratch on toy
+    > tensors before touching ViT.
+    """),
+    code("""
+    # Clean up hooks.
+    gradcam.close()
+    """),
+]
 
 N08 = skeleton(
     "08 — Attention, the gentle introduction",
