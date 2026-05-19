@@ -2067,8 +2067,17 @@ N08 = [
     - **Key** K — what each token *advertises* about itself.
     - **Value** V — what each token *carries* if attended to.
 
-    The attention weights are softmax over `Q · Kᵀ / √d`. The output is those
-    weights times V. That's it. Walk through it once on a toy tensor.
+    The attention weights are softmax over `Q · Kᵀ / √d`, where **`d` is the
+    dimensionality of each query/key vector** (here `D=8`; in our ViT it's
+    `embed_dim / num_heads`). Why divide by `√d`? The dot product of two
+    random `d`-dim vectors has variance proportional to `d`, so without
+    scaling the scores blow up as `d` grows and softmax saturates — one
+    weight near 1, the rest near 0, gradients vanish. Dividing by `√d` keeps
+    the scores in a healthy range. That's the "scaled" in *scaled dot-product
+    attention* (Vaswani et al., 2017, §3.2.1).
+
+    The output is those weights times V. That's it. Walk through it once on
+    a toy tensor.
     """),
     code("""
     # Toy: 1 batch, 4 tokens, 8-d embeddings.
