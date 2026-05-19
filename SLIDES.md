@@ -4,23 +4,21 @@ Slides live in `slides/` as Marp markdown. Each `.md` file is one deck.
 
 ## Building
 
+PDF is the only output format we ship.
+
 ```bash
 # One-off
-npx --yes @marp-team/marp-cli@latest slides/<deck>.md -o slides/<deck>.html
-npx --yes @marp-team/marp-cli@latest slides/<deck>.md --pdf  --allow-local-files
-npx --yes @marp-team/marp-cli@latest slides/<deck>.md --pptx --allow-local-files
+npx --yes @marp-team/marp-cli@latest slides/<deck>.md --pdf --allow-local-files
 
 # Or install once
 brew install marp-cli
-marp slides/<deck>.md -o slides/<deck>.html
-marp slides/<deck>.md --pdf  --allow-local-files
-marp slides/<deck>.md --pptx --allow-local-files
+marp slides/<deck>.md --pdf --allow-local-files
 
 # Live-reload server while editing
 marp -s slides/
 ```
 
-`--allow-local-files` is needed for PDF/PPTX when slides reference local images.
+`--allow-local-files` is needed when slides reference local images.
 
 Best editor experience: install the **Marp for VS Code** extension — live preview in a side panel.
 

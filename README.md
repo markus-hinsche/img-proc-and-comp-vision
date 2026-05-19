@@ -139,8 +139,8 @@ print('OK')
 ## Slides
 
 Short decks live in `slides/` as Marp markdown (e.g. `slides/intro.md`,
-`slides/debugging.md`). See [SLIDES.md](SLIDES.md) for build commands
-(HTML / PDF / PPTX), frontmatter, and syntax reference.
+`slides/debugging.md`) and are built to PDF. See [SLIDES.md](SLIDES.md)
+for build commands, frontmatter, and syntax reference.
 
 ---
 
