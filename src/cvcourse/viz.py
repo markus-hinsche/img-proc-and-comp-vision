@@ -102,3 +102,23 @@ def show_feature_maps(maps: torch.Tensor, cols: int = 8, max_maps: int = 16):
     maps = maps.detach().cpu()
     n = min(maps.shape[0], max_maps)
     show_grid([maps[i] for i in range(n)], cols=cols, cmap="viridis")
+
+
+def plot_history(history: dict, title: str = "") -> None:
+    """Plot train/val loss and accuracy curves from a fit() history dict.
+
+    ``history`` must have keys ``train_loss``, ``val_loss``, ``train_acc``,
+    ``val_acc``, each a list of per-epoch values of equal length.
+    """
+    epochs = range(1, len(history["train_loss"]) + 1)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.5))
+    axes[0].plot(epochs, history["train_loss"], "-o", label="train")
+    axes[0].plot(epochs, history["val_loss"], "-o", label="val")
+    axes[0].set_xlabel("epoch"); axes[0].set_ylabel("loss"); axes[0].legend()
+    axes[1].plot(epochs, history["train_acc"], "-o", label="train")
+    axes[1].plot(epochs, history["val_acc"], "-o", label="val")
+    axes[1].set_xlabel("epoch"); axes[1].set_ylabel("accuracy"); axes[1].legend()
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    plt.show()
