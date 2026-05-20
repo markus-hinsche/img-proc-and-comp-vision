@@ -25,9 +25,18 @@ Over three days we'll cover:
 
 Hands-on throughout. Every concept is paired with a notebook you run yourself.
 
-Topics we can dig into on request:
-mixed-precision training, multi-GPU, model ensembling, hyperparameter tuning,
-data-centric vs model-centric iteration, deployment.
+---
+
+# Topics we can dig into on request
+
+- image augmentation strategies (RandAugment, MixUp, CutMix, Albumentations)
+- self-supervised pretraining (SimCLR, DINO, MAE)
+- object detection (YOLO, DETR), instance/semantic segmentation (U-Net, Mask R-CNN, SAM), pose estimation, keypoint detection
+- vision-language models (CLIP, SigLIP, BLIP) and zero-shot classification
+- robustness: adversarial examples, distribution shift, OOD detection
+- active learning and data-centric labeling loops for image datasets
+- medical imaging (+ class imbalance)
+- synthetic data and sim-to-real
 
 ---
 
@@ -48,11 +57,12 @@ Notebooks live in `notebooks/`, slides in `slides/`.
 
 # whoami
 
-- **Markus Hinsche** — co-founder & CTO of [Thea Care](https://theacare.de)
+- **Markus Hinsche** — Co-Founder & CTO of [Thea Care](https://theacare.de)
   - B2B SaaS: AI skin analysis for cosmetic and pharma brands
   - Computer vision in production (segmentation + classification)
 - Previously: ML freelancer — Welthungerhilfe, Charité radiology (both CV)
 - Strengths:
+  - Startups
   - Python (since 2009), Deep Learning (since 2018)
   - Productionizing models, MLOps, mentoring
 - [markushinsche.de](https://markushinsche.de) · [github](https://github.com/markus-hinsche/)
@@ -77,13 +87,13 @@ medical imaging, defect detection in manufacturing, satellite imagery.
 
 ---
 
-# What you'll be able to do by Friday
+# What you'll be able to do by the end of the class
 
 - Load any image dataset into PyTorch and apply augmentations
 - Build a CNN from scratch and train it on GPU
 - Fine-tune a pretrained model (ResNet, EfficientNet, ViT) on your own data
 - Debug training failures (loss not decreasing, overfitting, wrong shapes)
-- Explain *why* a model predicts what it predicts (Grad-CAM)
+- Explain _why_ a model predicts what it predicts (Grad-CAM)
 - Understand the bridge from CNNs to Vision Transformers
 
 ---
@@ -91,7 +101,7 @@ medical imaging, defect detection in manufacturing, satellite imagery.
 # Ground rules
 
 - **Ask questions immediately.** If you're lost on slide 3, you'll be lost on slide 30.
-- **Run the code.** Reading notebooks is not the same as running them.
+- **Modify the code.** Reading notebooks is not the same as running your new version.
 - **Pair up.** Two brains debug faster than one.
 - **It's OK if your model doesn't train.** Half the skill is figuring out why.
 
@@ -102,11 +112,11 @@ medical imaging, defect detection in manufacturing, satellite imagery.
 TF exposes three "APIs": **Sequential**, **Functional**, **Model subclass**.
 PyTorch collapses them into essentially two:
 
-| TF API           | PyTorch equivalent          | When to use it                                       |
-| ---------------- | --------------------------- | ---------------------------------------------------- |
-| Sequential       | `nn.Sequential(...)`        | Straight-line stack, no branching. Tiny demos.       |
-| Functional API   | `nn.Module` subclass        | The default — define layers, wire them in `forward`. |
-| Model subclass   | `nn.Module` subclass (same) | Same idea, same code.                                |
+| TF API         | PyTorch equivalent          | When to use it                                       |
+| -------------- | --------------------------- | ---------------------------------------------------- |
+| Sequential     | `nn.Sequential(...)`        | Straight-line stack, no branching. Tiny demos.       |
+| Functional API | `nn.Module` subclass        | The default — define layers, wire them in `forward`. |
+| Model subclass | `nn.Module` subclass (same) | Same idea, same code.                                |
 
 Plus a PyTorch extra: **`torch.nn.functional`** (`F.relu`, `F.conv2d`, ...) —
 stateless ops you call directly inside `forward()`. No layer object needed.
@@ -144,7 +154,7 @@ skip connection, two heads, or any conditional flow.
 # Debugging CV code
 
 Failure modes you'll meet first — a reference deck. Point back to it
-any time you hit a bug. The goal: make *"what kind of bug is this?"*
+any time you hit a bug. The goal: make _"what kind of bug is this?"_
 a reflex.
 
 ---
@@ -179,7 +189,7 @@ needs `model.to(device)` once. Do it explicitly — no auto-magic.
 
 **Symptom:** loss curve looks bizarre, gradients explode.
 
-**Cause:** PyTorch *accumulates* gradients by default. Without `zero_grad()`,
+**Cause:** PyTorch _accumulates_ gradients by default. Without `zero_grad()`,
 each step uses the sum of all previous gradients.
 
 **Reflex:** the loop pattern is fixed —
@@ -208,7 +218,7 @@ Don't reorder.
 ### Normalization mismatch
 
 If you fine-tune a torchvision model, you must use ImageNet mean/std. If you
-trained from scratch on your dataset, use *its* mean/std. Mixing them
+trained from scratch on your dataset, use _its_ mean/std. Mixing them
 silently degrades accuracy.
 
 ### Augmenting validation
