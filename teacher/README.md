@@ -41,14 +41,14 @@ just know the build script will overwrite them if you re-run it.
 See [`SLIDES.md`](SLIDES.md). Quick reference:
 
 ```bash
-# From teacher/
-marp slides/day1.md --pdf --allow-local-files
-marp -s slides/   # live-reload server while editing
+# From the project root — PDFs land in slides/ at the repo root, not in teacher/slides/
+marp teacher/slides/day1.md --pdf --allow-local-files -o slides/day1.pdf
+marp -s teacher/slides/   # live-reload server while editing
 ```
 
 ## Pre-cohort checklist
 
 - [ ] Re-read `TEACHING_NOTES.md`.
-- [ ] Rebuild all slide PDFs (`marp slides/day*.md --pdf --allow-local-files`).
+- [ ] Rebuild all slide PDFs (from project root: `for d in day1 day2 day3; do marp teacher/slides/$d.md --pdf --allow-local-files -o slides/$d.pdf; done`).
 - [ ] Re-execute all notebooks headlessly to refresh outputs.
 - [ ] Update the year/cohort line on `slides/day1.md` title slide.

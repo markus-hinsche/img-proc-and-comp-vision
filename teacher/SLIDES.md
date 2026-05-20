@@ -4,18 +4,18 @@ Slides live in `slides/` as Marp markdown. Each `.md` file is one deck.
 
 ## Building
 
-PDF is the only output format we ship.
+PDF is the only output format we ship. Source markdown + images live in `teacher/slides/`; the generated PDFs are written to `slides/` at the repo root so students can grab them without digging into the teaching materials.
 
 ```bash
-# One-off
-npx --yes @marp-team/marp-cli@latest slides/<deck>.md --pdf --allow-local-files
+# Run from the project root. <deck> is day1, day2, day3, ...
+npx --yes @marp-team/marp-cli@latest teacher/slides/<deck>.md --pdf --allow-local-files -o slides/<deck>.pdf
 
 # Or install once
 brew install marp-cli
-marp slides/<deck>.md --pdf --allow-local-files
+marp teacher/slides/<deck>.md --pdf --allow-local-files -o slides/<deck>.pdf
 
 # Live-reload server while editing
-marp -s slides/
+marp -s teacher/slides/
 ```
 
 `--allow-local-files` is needed when slides reference local images.
