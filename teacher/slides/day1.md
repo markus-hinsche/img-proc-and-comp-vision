@@ -2,6 +2,14 @@
 marp: true
 theme: default
 paginate: true
+style: |
+  section { font-size: 24px; }
+  section pre, section code { font-size: 0.78em; }
+  section h1 { font-size: 1.6em; }
+  section h2 { font-size: 1.25em; }
+  section h3 { font-size: 1.05em; }
+  section li { margin: 0.15em 0; }
+  section table { font-size: 0.85em; }
 ---
 
 <!-- _class: invert -->
@@ -107,26 +115,24 @@ medical imaging, defect detection in manufacturing, satellite imagery.
 
 ---
 
-# Building models — PyTorch vs TensorFlow
+# Building models in PyTorch
 
-TF exposes three "APIs": **Sequential**, **Functional**, **Model subclass**.
-PyTorch collapses them into essentially two:
+Two ways to define a model:
 
-| TF API         | PyTorch equivalent          | When to use it                                       |
-| -------------- | --------------------------- | ---------------------------------------------------- |
-| Sequential     | `nn.Sequential(...)`        | Straight-line stack, no branching. Tiny demos.       |
-| Functional API | `nn.Module` subclass        | The default — define layers, wire them in `forward`. |
-| Model subclass | `nn.Module` subclass (same) | Same idea, same code.                                |
+| Approach            | When to use it                                       |
+| ------------------- | ---------------------------------------------------- |
+| `nn.Sequential(...)` | Straight-line stack, no branching. Tiny demos.       |
+| `nn.Module` subclass | The default — define layers, wire them in `forward`. Branches, skips, multiple heads, anything. |
 
-Plus a PyTorch extra: **`torch.nn.functional`** (`F.relu`, `F.conv2d`, ...) —
-stateless ops you call directly inside `forward()`. No layer object needed.
+Plus **`torch.nn.functional`** (`F.relu`, `F.conv2d`, ...) — stateless ops you
+call directly inside `forward()`. No layer object needed.
 
 ---
 
 # The two patterns side by side
 
 ```python
-# 1. Sequential — only for linear stacks
+# 1. nn.Sequential — only for linear stacks
 model = nn.Sequential(
     nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
     nn.Flatten(), nn.Linear(16*14*14, 10),
@@ -144,8 +150,8 @@ class CNN(nn.Module):
         return self.head(x.flatten(1))
 ```
 
-**Rule of thumb:** start `Sequential`, switch to subclass the moment you need a
-skip connection, two heads, or any conditional flow.
+**Rule of thumb:** start with `nn.Sequential`, switch to a subclass the moment
+you need a skip connection, two heads, or any conditional flow.
 
 ---
 
@@ -159,7 +165,7 @@ a reflex.
 
 ---
 
-## The five bugs that eat the most time
+## The five bugs that eat the most time (1/2)
 
 ### 1. Wrong tensor shape
 
@@ -173,8 +179,7 @@ a reflex.
 
 **Symptom:** image looks like static, or accuracy stuck at random.
 
-**Cause:** loaded an image as `(H, W, C)` and fed it to a Conv2d expecting
-`(C, H, W)`.
+**Cause:** loaded an image as `(H, W, C)` and fed it to a Conv2d expecting `(C, H, W)`.
 
 **Reflex:** if shape `[..., 3]` ends in a small number, you probably have HWC.
 
@@ -185,31 +190,25 @@ a reflex.
 **Fix:** every batch needs `xb, yb = xb.to(device), yb.to(device)`. The model
 needs `model.to(device)` once. Do it explicitly — no auto-magic.
 
+---
+
+## The five bugs that eat the most time (2/2)
+
 ### 4. Forgot `optimizer.zero_grad()`
 
 **Symptom:** loss curve looks bizarre, gradients explode.
-
-**Cause:** PyTorch _accumulates_ gradients by default. Without `zero_grad()`,
-each step uses the sum of all previous gradients.
-
-**Reflex:** the loop pattern is fixed —
+**Cause:** PyTorch _accumulates_ gradients. Without `zero_grad()`, each step uses the sum of all previous gradients.
+**Reflex:** the loop pattern is fixed — don't reorder:
 
 ```python
-optimizer.zero_grad()
-loss.backward()
-optimizer.step()
+optimizer.zero_grad(); loss.backward(); optimizer.step()
 ```
-
-Don't reorder.
 
 ### 5. `train()` vs `eval()` mode
 
 **Symptom:** validation accuracy randomly bounces; dropout/batchnorm misbehave.
-
 **Cause:** stayed in `model.train()` during evaluation, or never switched back.
-
-**Reflex:** any eval/inference block starts with `model.eval()` and
-`with torch.no_grad():`.
+**Reflex:** any eval/inference block starts with `model.eval()` and `with torch.no_grad():`.
 
 ---
 

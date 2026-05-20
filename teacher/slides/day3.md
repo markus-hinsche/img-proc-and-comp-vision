@@ -2,6 +2,14 @@
 marp: true
 theme: default
 paginate: true
+style: |
+  section { font-size: 24px; }
+  section pre, section code { font-size: 0.78em; }
+  section h1 { font-size: 1.6em; }
+  section h2 { font-size: 1.25em; }
+  section h3 { font-size: 1.05em; }
+  section li { margin: 0.15em 0; }
+  section table { font-size: 0.85em; }
 ---
 
 <!-- _paginate: false -->
