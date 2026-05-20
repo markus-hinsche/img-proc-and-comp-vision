@@ -16,6 +16,9 @@ marp teacher/slides/<deck>.md --pdf --allow-local-files -o slides/<deck>.pdf
 
 # Live-reload server while editing
 marp -s teacher/slides/
+
+# Build all three day decks at once
+for d in day1 day2 day3; do marp teacher/slides/$d.md --pdf --allow-local-files -o slides/$d.pdf; done
 ```
 
 `--allow-local-files` is needed when slides reference local images.
