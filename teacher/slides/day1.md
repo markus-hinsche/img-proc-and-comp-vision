@@ -169,26 +169,19 @@ a reflex.
 
 ### 1. Wrong tensor shape
 
-**Symptom:** `RuntimeError: mat1 and mat2 shapes cannot be multiplied` or
-"expected input of shape (N, 3, H, W) but got (N, H, W, 3)".
-
-**Reflex:** print `.shape` at every step. Especially before and after
-`Flatten`, `permute`, `view`, and the first `Linear`.
+**Symptom:** `RuntimeError: mat1 and mat2 shapes cannot be multiplied`, or "expected (N, 3, H, W) but got (N, H, W, 3)".
+**Reflex:** print `.shape` at every step — especially before/after `Flatten`, `permute`, `view`, and the first `Linear`.
 
 ### 2. HWC vs CHW
 
 **Symptom:** image looks like static, or accuracy stuck at random.
-
-**Cause:** loaded an image as `(H, W, C)` and fed it to a Conv2d expecting `(C, H, W)`.
-
-**Reflex:** if shape `[..., 3]` ends in a small number, you probably have HWC.
+**Cause:** loaded as `(H, W, C)` and fed to a `Conv2d` expecting `(C, H, W)`.
+**Reflex:** if the shape ends in a small number (e.g. `[..., 3]`), you probably have HWC.
 
 ### 3. Forgot `.to(device)`
 
 **Symptom:** `Expected all tensors to be on the same device, but found at least two devices, cpu and cuda:0`.
-
-**Fix:** every batch needs `xb, yb = xb.to(device), yb.to(device)`. The model
-needs `model.to(device)` once. Do it explicitly — no auto-magic.
+**Fix:** every batch needs `xb, yb = xb.to(device), yb.to(device)`; the model needs `model.to(device)` once. No auto-magic.
 
 ---
 
