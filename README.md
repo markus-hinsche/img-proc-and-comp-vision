@@ -93,18 +93,10 @@ Either way: if the last cell renders a grid of random images, **you're set up**.
 ```
 img-proc-and-comp-vision/
 ├── pyproject.toml            # dependencies (uv-managed)
-├── .python-version           # Python 3.11
+├── .python-version           # Python version
 ├── notebooks/                # teaching notebooks (the main interface)
 │   ├── 01_images_as_tensors.ipynb
-│   ├── 02_convolutions.ipynb
-│   ├── 03_datasets_and_augmentations.ipynb
-│   ├── 04_first_cnn.ipynb
-│   ├── 05_training_cnn.ipynb
-│   ├── 06_transfer_learning.ipynb
-│   ├── 07_gradcam.ipynb
-│   ├── 08_attention_intro.ipynb
-│   ├── 09_building_vit.ipynb
-│   └── 10_cnn_vs_vit.ipynb
+    ...
 ├── src/cvcourse/             # reusable helpers used by notebooks
 └── data/                     # cached datasets (gitignored)
 ```
