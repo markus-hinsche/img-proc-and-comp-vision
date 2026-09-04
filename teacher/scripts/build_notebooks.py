@@ -1843,14 +1843,17 @@ N08 = [
     attention — no convolutions — could match or beat ResNets *given enough
     data*.
 
-    Today we build a ViT from scratch in PyTorch and train it on a
-    cats-vs-dogs binary task carved out of CIFAR-10. The architecture is the
-    same one running inside CLIP, DINOv2, SAM, and the visual towers of every
-    multimodal model.
+    Today we build a small ViT from scratch in PyTorch and train it on a
+    cats-vs-dogs binary task carved out of CIFAR-10. We follow the paper for
+    the patch embedding and simplify elsewhere (no `[class]` token, mean-pool
+    instead; ReLU in the MLP) — each deviation is called out where it
+    happens. The same skeleton runs inside CLIP, DINOv2, SAM, and the visual
+    towers of every multimodal model.
 
     ## Objectives
 
-    - Cut an image into **patches** and embed each as a token.
+    - Cut an image into **patches**, flatten each one and embed it with a
+      **linear projection** (a plain `nn.Linear`, as in the paper).
     - Add **positional embeddings** so the model knows patch order.
     - Implement **scaled dot-product attention** on a toy tensor (the
       ~6 lines at the heart of every transformer).
@@ -1861,16 +1864,15 @@ N08 = [
     md(r"""
     ## 1. Data — CIFAR-10 filtered to cats vs dogs
 
-    The original TF notebook used `tensorflow_datasets.cats_vs_dogs`. PyTorch
-    doesn't ship that one, but `torchvision` does ship CIFAR-10 — and
-    classes 3 (cat) and 5 (dog) are exactly what we want. ~10k train and 2k
-    test images after filtering. Plenty to train a 15k-parameter model.
+    `torchvision` ships CIFAR-10, and classes 3 (cat) and 5 (dog) are exactly
+    what we want for a binary task. ~10k train and 2k test images after
+    filtering. Plenty to train a ~9k-parameter model.
 
-    We resize to **72×72** so 8×8 patches yield 9×9 = 81 tokens — same
-    geometry as the TF reference.
+    We resize to **72×72** so 8×8 patches yield 9×9 = 81 tokens.
     """),
     code("""
     import math
+    import matplotlib.pyplot as plt
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
@@ -1962,19 +1964,19 @@ N08 = [
         history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
         for epoch in range(1, epochs + 1):
             tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-            va_loss, va_acc = evaluate(model, val_loader, device)
+            val_loss, val_acc = evaluate(model, val_loader, device)
             history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
-            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["val_loss"].append(val_loss);   history["val_acc"].append(val_acc)
             history["lr"].append(optimizer.param_groups[0]["lr"])
             print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
-                  f"val {va_loss:.3f}/{va_acc:.3f}")
+                  f"val {val_loss:.3f}/{val_acc:.3f}")
         return history
     """),
     md(r"""
     ## 3. CNN baseline
 
     Before reaching for transformers, set the bar with a tiny CNN. Two
-    Conv→ReLU→Pool blocks, flatten, one Linear. ~18k parameters. This is the
+    Conv→ReLU→Pool blocks, flatten, one Linear. ~26k parameters. This is the
     "default" any reasonable engineer would try first on a small dataset.
     """),
     code("""
@@ -2005,54 +2007,74 @@ N08 = [
     image and patch size 8, we get a **9×9 = 81 patches** of shape `(3, 8, 8)`.
     Flattened, that's 81 tokens of dimension 3·8·8 = 192.
 
-    **The PyTorch trick.** Instead of explicitly extracting patches and then
-    projecting them with a `Linear` (the TF notebook's two-step), do both
-    operations in one `Conv2d` with `kernel_size = stride = patch_size`. This
-    is what timm, torchvision, and the original Dosovitskiy paper all do
-    (figure 1, "linear projection of flattened patches" is *literally* a
-    strided Conv2d).
+    This is exactly what the paper does (Eq. 1): **flatten** each patch into
+    a 192-vector — no pixel is dropped or pooled — and then **project** it
+    with one shared matrix `E` of shape `(192, D)`. In PyTorch that's
+    `nn.Linear(192, D)` applied to every patch. No convolution anywhere.
+
+    On top of the projected patches we add a learned **positional
+    embedding** (one row per patch position), so the model can tell where a
+    patch came from. The paper also prepends a learnable `[class]` token
+    here; we skip it and mean-pool over the patch tokens at the end instead
+    (see section 7).
+
+    > Footnote: libraries like `timm` and `torchvision` fuse the slicing and
+    > the projection into one `nn.Conv2d(kernel_size=patch_size,
+    > stride=patch_size)`. That is the *same* linear map — one weight matrix
+    > applied to each non-overlapping patch — just faster. Here we keep the
+    > two steps apart so you can see the `Linear`.
     """),
     code("""
+    def patchify(x, patch_size):
+        # (B, C, H, W) -> (B, N, C*p*p): cut into non-overlapping patches, flatten each.
+        B, C, H, W = x.shape
+        p = patch_size
+        grid_h, grid_w = H // p, W // p
+        x = x.reshape(B, C, grid_h, p, grid_w, p)     # split H -> (grid_h, p) and W -> (grid_w, p)
+        x = x.permute(0, 2, 4, 1, 3, 5)               # (B, grid_h, grid_w, C, p, p)
+        x = x.reshape(B, grid_h * grid_w, C * p * p)  # (B, N, C*p*p)  one flat vector per patch
+        return x
+
+
     class PatchEmbedding(nn.Module):
         def __init__(self, in_channels: int, patch_size: int, num_patches: int, embed_dim: int):
             super().__init__()
-            self.num_patches = num_patches
-            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+            self.patch_size = patch_size
+            patch_dim = in_channels * patch_size * patch_size   # 3*8*8 = 192
+            self.proj = nn.Linear(patch_dim, embed_dim)         # E in the paper, shared by all patches
             self.pos_embedding = nn.Embedding(num_patches, embed_dim)
             # register a buffer of positions so .to(device) carries it along
             self.register_buffer("positions", torch.arange(num_patches))
 
         def forward(self, x):
-            # x: (B, 3, H, W) -> (B, D, H/p, W/p)
+            # x: (B, 3, H, W) -> (B, N, 192): flatten every patch, no pixels lost
+            x = patchify(x, self.patch_size)
+            # -> (B, N, D): the same Linear applied to each patch
             x = self.proj(x)
-            # -> (B, D, N) -> (B, N, D)
-            x = x.flatten(2).transpose(1, 2)
             # add learned positional embedding to every batch item
             x = x + self.pos_embedding(self.positions)
             return x
 
+
     patch_size  = 8
-    num_patches = (IMG_SIZE // patch_size) ** 2   # 9*9 = 81
+    grid_size   = IMG_SIZE // patch_size   # 9
+    num_patches = grid_size ** 2           # 81
     embed_dim   = 16
 
-    pe = PatchEmbedding(3, patch_size, num_patches, embed_dim).to(device)
-    xb, _ = next(iter(train_loader))
-    out = pe(xb.to(device))
-    print(f"in {tuple(xb.shape)} -> tokens {tuple(out.shape)}")  # (B, 81, 16)
+    patch_embed = PatchEmbedding(3, patch_size, num_patches, embed_dim).to(device)
+    tokens = patch_embed(xb.to(device))
+    print(f"in {tuple(xb.shape)} -> tokens {tuple(tokens.shape)}")  # (B, 81, 16)
     """),
     code("""
-    # Visualize the 81 patches of a single image.
-    import matplotlib.pyplot as plt
+    # Visualize the 81 patches of one image — using the same patchify() the model uses.
+    patches = patchify(xb[:1], patch_size)[0]   # (81, 192)
 
-    img = xb[0]  # (3, 72, 72)
-    n = IMG_SIZE // patch_size
-    fig, axes = plt.subplots(n, n, figsize=(6, 6))
-    for i in range(n):
-        for j in range(n):
-            patch = img[:, i*patch_size:(i+1)*patch_size, j*patch_size:(j+1)*patch_size]
-            axes[i, j].imshow(patch.permute(1, 2, 0))
-            axes[i, j].axis("off")
-    plt.suptitle("81 patches (9x9 grid of 8x8 patches)")
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(6, 6))
+    for i, ax in enumerate(axes.flat):
+        patch = patches[i].reshape(3, patch_size, patch_size)   # un-flatten for display
+        ax.imshow(patch.permute(1, 2, 0))
+        ax.axis("off")
+    plt.suptitle(f"{num_patches} patches ({grid_size}x{grid_size} grid of {patch_size}x{patch_size} patches)")
     plt.tight_layout(); plt.show()
     """),
     md(r"""
@@ -2094,11 +2116,11 @@ N08 = [
 
     scores  = Q @ K.transpose(-1, -2) / math.sqrt(D)   # (B, N, N)
     weights = scores.softmax(dim=-1)                   # rows sum to 1
-    out     = weights @ V                              # (B, N, D)
+    attn_out = weights @ V                             # (B, N, D)
 
     print("attention weights (rows sum to 1):")
     print(weights.squeeze(0).round(decimals=2))
-    print("output shape:", out.shape)
+    print("output shape:", attn_out.shape)
     """),
     code("""
     plt.imshow(weights.squeeze(0).detach(), cmap="viridis")
@@ -2118,18 +2140,21 @@ N08 = [
     ## 6. The transformer encoder block
 
     The standard *pre-norm* recipe (more stable than the post-norm variant
-    in the original "Attention Is All You Need" paper, and what every modern
-    ViT uses):
+    in the original "Attention Is All You Need" paper, and what the ViT
+    paper and every modern ViT use):
 
     ```
     x = x + Attention(LayerNorm(x))
     x = x + MLP(LayerNorm(x))
     ```
 
-    > Sidebar: the TF reference notebook has a `# BUG FIX!` comment on the
-    > residual — it's a real bug. If you forget to add the residual back in,
-    > gradients can't flow past the attention layer and the network refuses
-    > to train. Residual connections are non-negotiable in transformers.
+    The MLP is two `Linear` layers with a non-linearity in between. The
+    paper uses GELU; we use ReLU, which is fine at this scale.
+
+    > Sidebar: a classic bug is to write `x = attn_out` instead of
+    > `x = x + attn_out`. Without the residual, gradients can't flow past
+    > the attention layer and the network refuses to train. Residual
+    > connections are non-negotiable in transformers.
     """),
     code("""
     class TransformerEncoder(nn.Module):
@@ -2155,16 +2180,20 @@ N08 = [
     """),
     md(r"""
     ## 7. Assemble the ViT
+
+    Patch embedding → `num_encoders` blocks → classify. Here is where we
+    deviate from the paper: it reads out the `[class]` token, we
+    **mean-pool over all patch tokens** and put a `Linear` on top. Simpler,
+    and for a model this small it makes no difference.
     """),
     code("""
     class ViT(nn.Module):
-        def __init__(self, image_size=72, patch_size=8, in_channels=3,
-                     embed_dim=16, num_heads=4, num_encoders=2, num_classes=2):
+        def __init__(self, in_channels: int, patch_size: int, num_patches: int, embed_dim: int,
+                     num_heads: int, num_encoders: int, mlp_hidden: int, num_classes: int):
             super().__init__()
-            num_patches = (image_size // patch_size) ** 2
             self.patch_embed = PatchEmbedding(in_channels, patch_size, num_patches, embed_dim)
             self.encoders = nn.Sequential(*[
-                TransformerEncoder(embed_dim, num_heads, mlp_hidden=embed_dim * 2)
+                TransformerEncoder(embed_dim, num_heads, mlp_hidden)
                 for _ in range(num_encoders)
             ])
             self.head = nn.Linear(embed_dim, num_classes)
@@ -2175,13 +2204,20 @@ N08 = [
             x = x.mean(dim=1)               # global average pool over tokens -> (B, D)
             return self.head(x)             # (B, num_classes)
 
-    vit = ViT().to(device)
+
+
+    num_heads    = 4
+    num_encoders = 2
+    mlp_hidden   = 2 * embed_dim
+
+    vit = ViT(3, patch_size, num_patches, embed_dim, num_heads, num_encoders, mlp_hidden,
+              num_classes=len(class_names)).to(device)
     summary(vit, input_size=(1, 3, IMG_SIZE, IMG_SIZE), device=device)
     """),
     md(r"""
-    ~15k trainable parameters — comparable to the CNN's 18k. Roughly head-to-head
-    on capacity, but **all the inductive bias the CNN gets for free, the ViT
-    has to learn**.
+    ~9k trainable parameters — about a third of the CNN's ~26k. So the ViT
+    is not over-parameterized here, and on top of that **all the inductive
+    bias the CNN gets for free, the ViT has to learn**.
 
     ## 8. Train the ViT
     """),
@@ -2224,13 +2260,14 @@ N08 = [
 
     ## Wrap-up
 
-    You've built a Vision Transformer from scratch: patchify, embed with
-    learned positions, stack `LayerNorm → MultiheadAttention → MLP` blocks,
-    pool, classify. The same skeleton runs inside CLIP, DINOv2, SAM, and
-    every vision tower of every modern multimodal model.
+    You've built a Vision Transformer from scratch: flatten patches and
+    project them with a `Linear`, add learned positions, stack
+    `LayerNorm → MultiheadAttention → MLP` blocks, pool, classify. The same
+    skeleton runs inside CLIP, DINOv2, SAM, and every vision tower of every
+    modern multimodal model.
 
-    > **Next notebook (09):** load a **pretrained** ViT via `timm` and
-    > fine-tune it on a small dataset. The transfer-learning recipe from
+    > **Next notebook (09):** load a **pretrained** ViT from Hugging Face
+    > and fine-tune it on a small dataset. The transfer-learning recipe from
     > N06, with attention instead of convolutions in the backbone.
     """),
 ]
