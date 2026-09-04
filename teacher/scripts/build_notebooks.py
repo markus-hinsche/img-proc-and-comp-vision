@@ -505,7 +505,7 @@ N04 = [
 
     `forward → loss → backward → step → zero_grad`.
 
-    Target: > 85% test accuracy in a few minutes of CPU training.
+    Target: > 85% val accuracy in a few minutes of CPU training.
     """),
     code("""
     import torch
@@ -532,12 +532,19 @@ N04 = [
     ## 1. Data
     """),
     code("""
+    from torch.utils.data import random_split
+
     pipeline = T.Compose([T.ToTensor(), T.Normalize((0.2860,), (0.3530,))])
-    train_ds = torchvision.datasets.FashionMNIST("../data", train=True,  download=True, transform=pipeline)
-    test_ds  = torchvision.datasets.FashionMNIST("../data", train=False, download=True, transform=pipeline)
+    full_train = torchvision.datasets.FashionMNIST("../data", train=True, download=True, transform=pipeline)
+
+    # 54k / 6k split, deterministic seed so val is reproducible.
+    train_ds, val_ds = random_split(
+        full_train, [54_000, 6_000],
+        generator=torch.Generator().manual_seed(0),
+    )
 
     train_loader = DataLoader(train_ds, batch_size=128, shuffle=True,  num_workers=0)
-    test_loader  = DataLoader(test_ds,  batch_size=256, shuffle=False, num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=256, shuffle=False, num_workers=0)
     """),
     md("""
     ## 2. Model
@@ -620,9 +627,9 @@ N04 = [
 
     for epoch in range(1, EPOCHS + 1):
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-        te_loss, te_acc = evaluate(model, test_loader, device)
+        val_loss, val_acc = evaluate(model, val_loader, device)
         print(f"epoch {epoch}  train loss {tr_loss:.3f} acc {tr_acc:.3f}  "
-              f"|  test loss {te_loss:.3f} acc {te_acc:.3f}")
+              f"|  val loss {val_loss:.3f} acc {val_acc:.3f}")
     """),
     md("""
     ## 5. Look at the mistakes
@@ -632,13 +639,13 @@ N04 = [
     """),
     code("""
     model.eval()
-    xb, yb = next(iter(test_loader))
+    xb, yb = next(iter(val_loader))
     with torch.no_grad():
         preds = model(xb.to(device)).argmax(1).cpu()
     wrong = (preds != yb).nonzero(as_tuple=True)[0][:16]
     show_grid(
         xb[wrong],
-        titles=[f"{test_ds.classes[yb[i]]}->{test_ds.classes[preds[i]]}" for i in wrong],
+        titles=[f"{full_train.classes[yb[i]]}->{full_train.classes[preds[i]]}" for i in wrong],
         cols=8,
     )
     """),
@@ -664,16 +671,8 @@ N04 = [
 
 
 # --------------------------------------------------------------------------- #
-# Day 2 / Day 3 — skeletons only for now. Flesh out after Day 1 dry-run.      #
+# Day 2 — Training, transfer learning, interpretability                         #
 # --------------------------------------------------------------------------- #
-
-def skeleton(title: str, day: str, intro: str, sections: list[str]) -> list[dict]:
-    cells = [md(f"# {title}\n\n**{day}**\n\n{intro}\n\n> ⚠️ Skeleton — content to be filled in after Day 1 dry-run.")]
-    for s in sections:
-        cells.append(md(f"## {s}"))
-        cells.append(code(f"# TODO: {s}"))
-    return cells
-
 
 N05 = [
     md(r"""
@@ -865,14 +864,14 @@ N05 = [
         history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
         for epoch in range(1, epochs + 1):
             tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-            va_loss, va_acc = evaluate(model, val_loader, device)
+            val_loss, val_acc = evaluate(model, val_loader, device)
             history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
-            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["val_loss"].append(val_loss);   history["val_acc"].append(val_acc)
             history["lr"].append(optimizer.param_groups[0]["lr"])
             if scheduler is not None:
                 scheduler.step()
             print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
-                  f"val {va_loss:.3f}/{va_acc:.3f}  lr {history['lr'][-1]:.4f}")
+                  f"val {val_loss:.3f}/{val_acc:.3f}  lr {history['lr'][-1]:.4f}")
         return history
     """),
     code("""
@@ -1037,18 +1036,18 @@ N05 = [
         best_val_acc = 0.0
         for epoch in range(1, epochs + 1):
             tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-            va_loss, va_acc = evaluate(model, val_loader, device)
+            val_loss, val_acc = evaluate(model, val_loader, device)
             history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
-            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["val_loss"].append(val_loss);   history["val_acc"].append(val_acc)
             history["lr"].append(optimizer.param_groups[0]["lr"])
             if scheduler is not None:
                 scheduler.step()
-            improved = va_acc > best_val_acc
+            improved = val_acc > best_val_acc
             if improved:
-                best_val_acc = va_acc
+                best_val_acc = val_acc
                 torch.save(model.state_dict(), ckpt_path)
             print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
-                  f"val {va_loss:.3f}/{va_acc:.3f}  "
+                  f"val {val_loss:.3f}/{val_acc:.3f}  "
                   f"{'*saved*' if improved else ''}")
         return history, best_val_acc
 
@@ -2236,35 +2235,6 @@ N08 = [
     """),
 ]
 
-N09 = skeleton(
-    "09 — Building a tiny Vision Transformer",
-    "Day 3 · Notebook 2 of 3",
-    "Implement a small ViT end-to-end: patches, positional embeddings, transformer encoder, classifier head. Train on CIFAR10 to see it actually learn.",
-    [
-        "Patch embedding via a Conv2d trick",
-        "Positional embeddings (learned vs sinusoidal)",
-        "Transformer encoder block",
-        "CLS token and classifier head",
-        "Training on CIFAR10 — what to expect",
-        "Visualizing attention maps",
-    ],
-)
-
-N10 = skeleton(
-    "10 — CNN vs ViT — when to pick which",
-    "Day 3 · Notebook 3 of 3",
-    "Head-to-head: compute, parameter count, data efficiency, attention vs feature maps, real-world tradeoffs.",
-    [
-        "Parameter and FLOP comparison at matched accuracy",
-        "Data efficiency — small dataset behavior",
-        "Inductive bias: locality vs global context",
-        "Visual comparison: GradCAM vs attention rollout",
-        "What ships in production today (and why)",
-        "When to reach for SAM / DINO / CLIP instead",
-    ],
-)
-
-
 def main() -> None:
     write("01_images_as_tensors.ipynb", N01)
     write("02_convolutions.ipynb", N02)
@@ -2274,8 +2244,6 @@ def main() -> None:
     write("06_transfer_learning.ipynb", N06)
     write("07_gradcam.ipynb", N07)
     write("08_intro_to_vit.ipynb", N08)
-    write("09_building_vit.ipynb", N09)
-    write("10_cnn_vs_vit.ipynb", N10)
 
 
 if __name__ == "__main__":
