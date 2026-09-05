@@ -2027,13 +2027,13 @@ N08 = [
     code("""
     def patchify(x, patch_size):
         # (B, C, H, W) -> (B, N, C*p*p): cut into non-overlapping patches, flatten each.
-        B, C, H, W = x.shape
         p = patch_size
-        grid_h, grid_w = H // p, W // p
-        x = x.reshape(B, C, grid_h, p, grid_w, p)     # split H -> (grid_h, p) and W -> (grid_w, p)
-        x = x.permute(0, 2, 4, 1, 3, 5)               # (B, grid_h, grid_w, C, p, p)
-        x = x.reshape(B, grid_h * grid_w, C * p * p)  # (B, N, C*p*p)  one flat vector per patch
-        return x
+        patches = []
+        for top in range(0, x.shape[2], p):          # walk the rows of patches
+            for left in range(0, x.shape[3], p):     # walk the columns of patches
+                patch = x[:, :, top:top + p, left:left + p]   # (B, C, p, p)
+                patches.append(patch.flatten(1))              # (B, C*p*p)
+        return torch.stack(patches, dim=1)                    # (B, N, C*p*p)
 
 
     class PatchEmbedding(nn.Module):
