@@ -123,7 +123,7 @@ Hybrid models (Swin, ConvNeXt) borrow ideas from both.
 
 Notebook `09_building_vit.ipynb` — a ViT from scratch:
 
-1. **Patch embedding** with `nn.Conv2d(kernel_size=patch, stride=patch)`
+1. **Patch embedding**: flatten each patch, project with `nn.Linear` (paper Eq. 1)
 2. **Learnable `[CLS]` token** + **positional embedding**
 3. A single **Transformer encoder block** (multi-head attention + MLP + residuals)
 4. Stack $N$ blocks, classification head

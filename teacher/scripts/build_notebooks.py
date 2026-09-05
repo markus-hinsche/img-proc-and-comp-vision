@@ -505,7 +505,7 @@ N04 = [
 
     `forward → loss → backward → step → zero_grad`.
 
-    Target: > 85% test accuracy in a few minutes of CPU training.
+    Target: > 85% val accuracy in a few minutes of CPU training.
     """),
     code("""
     import torch
@@ -532,12 +532,19 @@ N04 = [
     ## 1. Data
     """),
     code("""
+    from torch.utils.data import random_split
+
     pipeline = T.Compose([T.ToTensor(), T.Normalize((0.2860,), (0.3530,))])
-    train_ds = torchvision.datasets.FashionMNIST("../data", train=True,  download=True, transform=pipeline)
-    test_ds  = torchvision.datasets.FashionMNIST("../data", train=False, download=True, transform=pipeline)
+    full_train = torchvision.datasets.FashionMNIST("../data", train=True, download=True, transform=pipeline)
+
+    # 54k / 6k split, deterministic seed so val is reproducible.
+    train_ds, val_ds = random_split(
+        full_train, [54_000, 6_000],
+        generator=torch.Generator().manual_seed(0),
+    )
 
     train_loader = DataLoader(train_ds, batch_size=128, shuffle=True,  num_workers=0)
-    test_loader  = DataLoader(test_ds,  batch_size=256, shuffle=False, num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=256, shuffle=False, num_workers=0)
     """),
     md("""
     ## 2. Model
@@ -620,9 +627,9 @@ N04 = [
 
     for epoch in range(1, EPOCHS + 1):
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-        te_loss, te_acc = evaluate(model, test_loader, device)
+        val_loss, val_acc = evaluate(model, val_loader, device)
         print(f"epoch {epoch}  train loss {tr_loss:.3f} acc {tr_acc:.3f}  "
-              f"|  test loss {te_loss:.3f} acc {te_acc:.3f}")
+              f"|  val loss {val_loss:.3f} acc {val_acc:.3f}")
     """),
     md("""
     ## 5. Look at the mistakes
@@ -632,13 +639,13 @@ N04 = [
     """),
     code("""
     model.eval()
-    xb, yb = next(iter(test_loader))
+    xb, yb = next(iter(val_loader))
     with torch.no_grad():
         preds = model(xb.to(device)).argmax(1).cpu()
     wrong = (preds != yb).nonzero(as_tuple=True)[0][:16]
     show_grid(
         xb[wrong],
-        titles=[f"{test_ds.classes[yb[i]]}->{test_ds.classes[preds[i]]}" for i in wrong],
+        titles=[f"{full_train.classes[yb[i]]}->{full_train.classes[preds[i]]}" for i in wrong],
         cols=8,
     )
     """),
@@ -664,16 +671,8 @@ N04 = [
 
 
 # --------------------------------------------------------------------------- #
-# Day 2 / Day 3 — skeletons only for now. Flesh out after Day 1 dry-run.      #
+# Day 2 — Training, transfer learning, interpretability                         #
 # --------------------------------------------------------------------------- #
-
-def skeleton(title: str, day: str, intro: str, sections: list[str]) -> list[dict]:
-    cells = [md(f"# {title}\n\n**{day}**\n\n{intro}\n\n> ⚠️ Skeleton — content to be filled in after Day 1 dry-run.")]
-    for s in sections:
-        cells.append(md(f"## {s}"))
-        cells.append(code(f"# TODO: {s}"))
-    return cells
-
 
 N05 = [
     md(r"""
@@ -865,14 +864,14 @@ N05 = [
         history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
         for epoch in range(1, epochs + 1):
             tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-            va_loss, va_acc = evaluate(model, val_loader, device)
+            val_loss, val_acc = evaluate(model, val_loader, device)
             history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
-            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["val_loss"].append(val_loss);   history["val_acc"].append(val_acc)
             history["lr"].append(optimizer.param_groups[0]["lr"])
             if scheduler is not None:
                 scheduler.step()
             print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
-                  f"val {va_loss:.3f}/{va_acc:.3f}  lr {history['lr'][-1]:.4f}")
+                  f"val {val_loss:.3f}/{val_acc:.3f}  lr {history['lr'][-1]:.4f}")
         return history
     """),
     code("""
@@ -1037,18 +1036,18 @@ N05 = [
         best_val_acc = 0.0
         for epoch in range(1, epochs + 1):
             tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-            va_loss, va_acc = evaluate(model, val_loader, device)
+            val_loss, val_acc = evaluate(model, val_loader, device)
             history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
-            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["val_loss"].append(val_loss);   history["val_acc"].append(val_acc)
             history["lr"].append(optimizer.param_groups[0]["lr"])
             if scheduler is not None:
                 scheduler.step()
-            improved = va_acc > best_val_acc
+            improved = val_acc > best_val_acc
             if improved:
-                best_val_acc = va_acc
+                best_val_acc = val_acc
                 torch.save(model.state_dict(), ckpt_path)
             print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
-                  f"val {va_loss:.3f}/{va_acc:.3f}  "
+                  f"val {val_loss:.3f}/{val_acc:.3f}  "
                   f"{'*saved*' if improved else ''}")
         return history, best_val_acc
 
@@ -1844,14 +1843,17 @@ N08 = [
     attention — no convolutions — could match or beat ResNets *given enough
     data*.
 
-    Today we build a ViT from scratch in PyTorch and train it on a
-    cats-vs-dogs binary task carved out of CIFAR-10. The architecture is the
-    same one running inside CLIP, DINOv2, SAM, and the visual towers of every
-    multimodal model.
+    Today we build a small ViT from scratch in PyTorch and train it on a
+    cats-vs-dogs binary task carved out of CIFAR-10. We follow the paper for
+    the patch embedding and simplify elsewhere (no `[class]` token, mean-pool
+    instead; ReLU in the MLP) — each deviation is called out where it
+    happens. The same skeleton runs inside CLIP, DINOv2, SAM, and the visual
+    towers of every multimodal model.
 
     ## Objectives
 
-    - Cut an image into **patches** and embed each as a token.
+    - Cut an image into **patches**, flatten each one and embed it with a
+      **linear projection** (a plain `nn.Linear`, as in the paper).
     - Add **positional embeddings** so the model knows patch order.
     - Implement **scaled dot-product attention** on a toy tensor (the
       ~6 lines at the heart of every transformer).
@@ -1862,16 +1864,15 @@ N08 = [
     md(r"""
     ## 1. Data — CIFAR-10 filtered to cats vs dogs
 
-    The original TF notebook used `tensorflow_datasets.cats_vs_dogs`. PyTorch
-    doesn't ship that one, but `torchvision` does ship CIFAR-10 — and
-    classes 3 (cat) and 5 (dog) are exactly what we want. ~10k train and 2k
-    test images after filtering. Plenty to train a 15k-parameter model.
+    `torchvision` ships CIFAR-10, and classes 3 (cat) and 5 (dog) are exactly
+    what we want for a binary task. ~10k train and 2k test images after
+    filtering. Plenty to train a ~9k-parameter model.
 
-    We resize to **72×72** so 8×8 patches yield 9×9 = 81 tokens — same
-    geometry as the TF reference.
+    We resize to **72×72** so 8×8 patches yield 9×9 = 81 tokens.
     """),
     code("""
     import math
+    import matplotlib.pyplot as plt
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
@@ -1963,19 +1964,19 @@ N08 = [
         history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
         for epoch in range(1, epochs + 1):
             tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device)
-            va_loss, va_acc = evaluate(model, val_loader, device)
+            val_loss, val_acc = evaluate(model, val_loader, device)
             history["train_loss"].append(tr_loss); history["train_acc"].append(tr_acc)
-            history["val_loss"].append(va_loss);   history["val_acc"].append(va_acc)
+            history["val_loss"].append(val_loss);   history["val_acc"].append(val_acc)
             history["lr"].append(optimizer.param_groups[0]["lr"])
             print(f"epoch {epoch:2d}  train {tr_loss:.3f}/{tr_acc:.3f}  "
-                  f"val {va_loss:.3f}/{va_acc:.3f}")
+                  f"val {val_loss:.3f}/{val_acc:.3f}")
         return history
     """),
     md(r"""
     ## 3. CNN baseline
 
     Before reaching for transformers, set the bar with a tiny CNN. Two
-    Conv→ReLU→Pool blocks, flatten, one Linear. ~18k parameters. This is the
+    Conv→ReLU→Pool blocks, flatten, one Linear. ~26k parameters. This is the
     "default" any reasonable engineer would try first on a small dataset.
     """),
     code("""
@@ -2006,54 +2007,74 @@ N08 = [
     image and patch size 8, we get a **9×9 = 81 patches** of shape `(3, 8, 8)`.
     Flattened, that's 81 tokens of dimension 3·8·8 = 192.
 
-    **The PyTorch trick.** Instead of explicitly extracting patches and then
-    projecting them with a `Linear` (the TF notebook's two-step), do both
-    operations in one `Conv2d` with `kernel_size = stride = patch_size`. This
-    is what timm, torchvision, and the original Dosovitskiy paper all do
-    (figure 1, "linear projection of flattened patches" is *literally* a
-    strided Conv2d).
+    This is exactly what the paper does (Eq. 1): **flatten** each patch into
+    a 192-vector — no pixel is dropped or pooled — and then **project** it
+    with one shared matrix `E` of shape `(192, D)`. In PyTorch that's
+    `nn.Linear(192, D)` applied to every patch. No convolution anywhere.
+
+    On top of the projected patches we add a learned **positional
+    embedding** (one row per patch position), so the model can tell where a
+    patch came from. The paper also prepends a learnable `[class]` token
+    here; we skip it and mean-pool over the patch tokens at the end instead
+    (see section 7).
+
+    > Footnote: libraries like `timm` and `torchvision` fuse the slicing and
+    > the projection into one `nn.Conv2d(kernel_size=patch_size,
+    > stride=patch_size)`. That is the *same* linear map — one weight matrix
+    > applied to each non-overlapping patch — just faster. Here we keep the
+    > two steps apart so you can see the `Linear`.
     """),
     code("""
+    def patchify(x, patch_size):
+        # (B, C, H, W) -> (B, N, C*p*p): cut into non-overlapping patches, flatten each.
+        p = patch_size
+        patches = []
+        for top in range(0, x.shape[2], p):          # walk the rows of patches
+            for left in range(0, x.shape[3], p):     # walk the columns of patches
+                patch = x[:, :, top:top + p, left:left + p]   # (B, C, p, p)
+                patches.append(patch.flatten(1))              # (B, C*p*p)
+        return torch.stack(patches, dim=1)                    # (B, N, C*p*p)
+
+
     class PatchEmbedding(nn.Module):
         def __init__(self, in_channels: int, patch_size: int, num_patches: int, embed_dim: int):
             super().__init__()
-            self.num_patches = num_patches
-            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+            self.patch_size = patch_size
+            patch_dim = in_channels * patch_size * patch_size   # 3*8*8 = 192
+            self.proj = nn.Linear(patch_dim, embed_dim)         # E in the paper, shared by all patches
             self.pos_embedding = nn.Embedding(num_patches, embed_dim)
             # register a buffer of positions so .to(device) carries it along
             self.register_buffer("positions", torch.arange(num_patches))
 
         def forward(self, x):
-            # x: (B, 3, H, W) -> (B, D, H/p, W/p)
+            # x: (B, 3, H, W) -> (B, N, 192): flatten every patch, no pixels lost
+            x = patchify(x, self.patch_size)
+            # -> (B, N, D): the same Linear applied to each patch
             x = self.proj(x)
-            # -> (B, D, N) -> (B, N, D)
-            x = x.flatten(2).transpose(1, 2)
             # add learned positional embedding to every batch item
             x = x + self.pos_embedding(self.positions)
             return x
 
+
     patch_size  = 8
-    num_patches = (IMG_SIZE // patch_size) ** 2   # 9*9 = 81
+    grid_size   = IMG_SIZE // patch_size   # 9
+    num_patches = grid_size ** 2           # 81
     embed_dim   = 16
 
-    pe = PatchEmbedding(3, patch_size, num_patches, embed_dim).to(device)
-    xb, _ = next(iter(train_loader))
-    out = pe(xb.to(device))
-    print(f"in {tuple(xb.shape)} -> tokens {tuple(out.shape)}")  # (B, 81, 16)
+    patch_embed = PatchEmbedding(3, patch_size, num_patches, embed_dim).to(device)
+    tokens = patch_embed(xb.to(device))
+    print(f"in {tuple(xb.shape)} -> tokens {tuple(tokens.shape)}")  # (B, 81, 16)
     """),
     code("""
-    # Visualize the 81 patches of a single image.
-    import matplotlib.pyplot as plt
+    # Visualize the 81 patches of one image — using the same patchify() the model uses.
+    patches = patchify(xb[:1], patch_size)[0]   # (81, 192)
 
-    img = xb[0]  # (3, 72, 72)
-    n = IMG_SIZE // patch_size
-    fig, axes = plt.subplots(n, n, figsize=(6, 6))
-    for i in range(n):
-        for j in range(n):
-            patch = img[:, i*patch_size:(i+1)*patch_size, j*patch_size:(j+1)*patch_size]
-            axes[i, j].imshow(patch.permute(1, 2, 0))
-            axes[i, j].axis("off")
-    plt.suptitle("81 patches (9x9 grid of 8x8 patches)")
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(6, 6))
+    for i, ax in enumerate(axes.flat):
+        patch = patches[i].reshape(3, patch_size, patch_size)   # un-flatten for display
+        ax.imshow(patch.permute(1, 2, 0))
+        ax.axis("off")
+    plt.suptitle(f"{num_patches} patches ({grid_size}x{grid_size} grid of {patch_size}x{patch_size} patches)")
     plt.tight_layout(); plt.show()
     """),
     md(r"""
@@ -2095,11 +2116,11 @@ N08 = [
 
     scores  = Q @ K.transpose(-1, -2) / math.sqrt(D)   # (B, N, N)
     weights = scores.softmax(dim=-1)                   # rows sum to 1
-    out     = weights @ V                              # (B, N, D)
+    attn_out = weights @ V                             # (B, N, D)
 
     print("attention weights (rows sum to 1):")
     print(weights.squeeze(0).round(decimals=2))
-    print("output shape:", out.shape)
+    print("output shape:", attn_out.shape)
     """),
     code("""
     plt.imshow(weights.squeeze(0).detach(), cmap="viridis")
@@ -2119,18 +2140,21 @@ N08 = [
     ## 6. The transformer encoder block
 
     The standard *pre-norm* recipe (more stable than the post-norm variant
-    in the original "Attention Is All You Need" paper, and what every modern
-    ViT uses):
+    in the original "Attention Is All You Need" paper, and what the ViT
+    paper and every modern ViT use):
 
     ```
     x = x + Attention(LayerNorm(x))
     x = x + MLP(LayerNorm(x))
     ```
 
-    > Sidebar: the TF reference notebook has a `# BUG FIX!` comment on the
-    > residual — it's a real bug. If you forget to add the residual back in,
-    > gradients can't flow past the attention layer and the network refuses
-    > to train. Residual connections are non-negotiable in transformers.
+    The MLP is two `Linear` layers with a non-linearity in between. The
+    paper uses GELU; we use ReLU, which is fine at this scale.
+
+    > Sidebar: a classic bug is to write `x = attn_out` instead of
+    > `x = x + attn_out`. Without the residual, gradients can't flow past
+    > the attention layer and the network refuses to train. Residual
+    > connections are non-negotiable in transformers.
     """),
     code("""
     class TransformerEncoder(nn.Module):
@@ -2156,16 +2180,20 @@ N08 = [
     """),
     md(r"""
     ## 7. Assemble the ViT
+
+    Patch embedding → `num_encoders` blocks → classify. Here is where we
+    deviate from the paper: it reads out the `[class]` token, we
+    **mean-pool over all patch tokens** and put a `Linear` on top. Simpler,
+    and for a model this small it makes no difference.
     """),
     code("""
     class ViT(nn.Module):
-        def __init__(self, image_size=72, patch_size=8, in_channels=3,
-                     embed_dim=16, num_heads=4, num_encoders=2, num_classes=2):
+        def __init__(self, in_channels: int, patch_size: int, num_patches: int, embed_dim: int,
+                     num_heads: int, num_encoders: int, mlp_hidden: int, num_classes: int):
             super().__init__()
-            num_patches = (image_size // patch_size) ** 2
             self.patch_embed = PatchEmbedding(in_channels, patch_size, num_patches, embed_dim)
             self.encoders = nn.Sequential(*[
-                TransformerEncoder(embed_dim, num_heads, mlp_hidden=embed_dim * 2)
+                TransformerEncoder(embed_dim, num_heads, mlp_hidden)
                 for _ in range(num_encoders)
             ])
             self.head = nn.Linear(embed_dim, num_classes)
@@ -2176,13 +2204,20 @@ N08 = [
             x = x.mean(dim=1)               # global average pool over tokens -> (B, D)
             return self.head(x)             # (B, num_classes)
 
-    vit = ViT().to(device)
+
+
+    num_heads    = 4
+    num_encoders = 2
+    mlp_hidden   = 2 * embed_dim
+
+    vit = ViT(3, patch_size, num_patches, embed_dim, num_heads, num_encoders, mlp_hidden,
+              num_classes=len(class_names)).to(device)
     summary(vit, input_size=(1, 3, IMG_SIZE, IMG_SIZE), device=device)
     """),
     md(r"""
-    ~15k trainable parameters — comparable to the CNN's 18k. Roughly head-to-head
-    on capacity, but **all the inductive bias the CNN gets for free, the ViT
-    has to learn**.
+    ~9k trainable parameters — about a third of the CNN's ~26k. So the ViT
+    is not over-parameterized here, and on top of that **all the inductive
+    bias the CNN gets for free, the ViT has to learn**.
 
     ## 8. Train the ViT
     """),
@@ -2225,45 +2260,17 @@ N08 = [
 
     ## Wrap-up
 
-    You've built a Vision Transformer from scratch: patchify, embed with
-    learned positions, stack `LayerNorm → MultiheadAttention → MLP` blocks,
-    pool, classify. The same skeleton runs inside CLIP, DINOv2, SAM, and
-    every vision tower of every modern multimodal model.
+    You've built a Vision Transformer from scratch: flatten patches and
+    project them with a `Linear`, add learned positions, stack
+    `LayerNorm → MultiheadAttention → MLP` blocks, pool, classify. The same
+    skeleton runs inside CLIP, DINOv2, SAM, and every vision tower of every
+    modern multimodal model.
 
-    > **Next notebook (09):** load a **pretrained** ViT via `timm` and
-    > fine-tune it on a small dataset. The transfer-learning recipe from
+    > **Next notebook (09):** load a **pretrained** ViT from Hugging Face
+    > and fine-tune it on a small dataset. The transfer-learning recipe from
     > N06, with attention instead of convolutions in the backbone.
     """),
 ]
-
-N09 = skeleton(
-    "09 — Building a tiny Vision Transformer",
-    "Day 3 · Notebook 2 of 3",
-    "Implement a small ViT end-to-end: patches, positional embeddings, transformer encoder, classifier head. Train on CIFAR10 to see it actually learn.",
-    [
-        "Patch embedding via a Conv2d trick",
-        "Positional embeddings (learned vs sinusoidal)",
-        "Transformer encoder block",
-        "CLS token and classifier head",
-        "Training on CIFAR10 — what to expect",
-        "Visualizing attention maps",
-    ],
-)
-
-N10 = skeleton(
-    "10 — CNN vs ViT — when to pick which",
-    "Day 3 · Notebook 3 of 3",
-    "Head-to-head: compute, parameter count, data efficiency, attention vs feature maps, real-world tradeoffs.",
-    [
-        "Parameter and FLOP comparison at matched accuracy",
-        "Data efficiency — small dataset behavior",
-        "Inductive bias: locality vs global context",
-        "Visual comparison: GradCAM vs attention rollout",
-        "What ships in production today (and why)",
-        "When to reach for SAM / DINO / CLIP instead",
-    ],
-)
-
 
 def main() -> None:
     write("01_images_as_tensors.ipynb", N01)
@@ -2274,8 +2281,6 @@ def main() -> None:
     write("06_transfer_learning.ipynb", N06)
     write("07_gradcam.ipynb", N07)
     write("08_intro_to_vit.ipynb", N08)
-    write("09_building_vit.ipynb", N09)
-    write("10_cnn_vs_vit.ipynb", N10)
 
 
 if __name__ == "__main__":
